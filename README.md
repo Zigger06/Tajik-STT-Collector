@@ -118,6 +118,43 @@ py -3 -m unittest discover -s tests -v
 
 Никаких внешних Python-зависимостей нет.
 
+## Сайт и публичная загрузка APK
+
+Мобильный лендинг, политика конфиденциальности и условия использования находятся в `docs/` и готовы для GitHub Pages.
+
+После объединения изменений:
+
+1. Откройте `Settings → Pages`.
+2. В `Build and deployment` выберите `Deploy from a branch`.
+3. Выберите ветку `main`, папку `/docs` и нажмите `Save`.
+4. Сайт появится по адресу `https://zigger06.github.io/Tajik-STT-Collector/`.
+
+Кнопка на сайте скачивает файл `Tajik-STT-Collector.apk` из последнего GitHub Release. Чтобы создать его, откройте `Actions → Publish test APK → Run workflow`, укажите версию вроде `v0.1.0` и дождитесь зелёной галочки.
+
+> Для свободного доступа добровольцев сайт и APK должны быть публичными. На GitHub Free для Pages нужен публичный репозиторий; файл Release из приватного репозитория также требует входа и доступа.
+
+## Что установить для сборки Android
+
+- Android Studio с Android SDK;
+- Android SDK Platform 35 и Build Tools 35.x через SDK Manager;
+- JDK 17 (встроенного JDK Android Studio обычно достаточно);
+- драйвер телефона на Windows, только если устройство не определяется через USB.
+
+Отдельно устанавливать Gradle не нужно: проект использует Gradle Wrapper. Для локального backend нужен Python 3.10 или новее, внешних пакетов нет.
+
+Сборка APK из терминала Android Studio:
+
+```powershell
+cd android
+.\gradlew.bat testDebugUnitTest assembleDebug
+```
+
+Готовый файл появится здесь:
+
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## Ограничение первого MVP
 
 Без туннеля компьютер доступен только устройствам в той же локальной сети. Для добровольцев из других мест следующим шагом можно подключить защищённый туннель, не перенося SQLite и WAV в облако.
