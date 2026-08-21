@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tajik STT Collector — локальная панель</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; background:#f3f6fb; color:#172036; }
+    body { margin:0; }
+    main { max-width:1000px; margin:0 auto; padding:28px 18px 60px; }
+    h1 { margin:0 0 6px; font-size:30px; }
+    .muted { color:#64748b; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin:22px 0; }
+    .card { background:#fff; border:1px solid #e2e8f0; border-radius:18px; padding:18px; box-shadow:0 8px 26px #1e293b0b; }
+    .stat { font-size:28px; font-weight:800; color:#0f766e; }
+    label { display:block; font-weight:700; margin:12px 0 6px; }
+    input,textarea,button,select { font:inherit; }
+    input,textarea { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid #cbd5e1; border-radius:10px; }
+    textarea { min-height:180px; resize:vertical; }
+    button { border:0; border-radius:11px; padding:11px 16px; background:#0f766e; color:#fff; font-weight:800; cursor:pointer; }
+    button.secondary { background:#334155; }
+    button.danger { background:#b91c1c; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+    .row input[type=checkbox] { width:auto; }
+    .review { padding:14px 0; border-top:1px solid #e2e8f0; }
+    .review textarea { min-height:80px; }
+    #message { min-height:24px; margin-top:12px; font-weight:700; }
+    code { background:#e2e8f0; border-radius:6px; padding:2px 6px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tajik STT Collector</h1>
+  <div class="muted">Локальная панель компьютера. База: SQLite, аудио: папка <code>runtime/audio</code>.</div>
+
+  <section class="card" style="margin-top:22px">
+    <label for="key">Ключ проекта</label>
+    <input id="key" value="tajik-stt-local" autocomplete="off">
+    <div class="row">
+      <button onclick="refreshAll()">Обновить статистику</button>
+      <span id="message"></span>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card"><div class="muted">Добровольцы</div><div class="stat" id="volunteers">0</div></div>
+    <div class="card"><div class="muted">Тексты приняты</div><div class="stat" id="textsApproved">0</div></div>
+    <div class="card"><div class="muted">Тексты на проверке</div><div class="stat" id="textsPending">0</div></div>
+    <div class="card"><div class="muted">Аудио принято</div><div class="stat" id="audioApproved">0</div></div>
+    <div class="card"><div class="muted">Аудио на проверке</div><div class="stat" id="audioPending">0</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Добавить тексты</h2>
+    <label for="source">Источник</label>
+    <input id="source" placeholder="Название книги, сайта или корпуса">
+    <label for="texts">Один текст на каждой строке</label>
+    <textarea id="texts" placeholder="Ҷумлаи якум.&#10;Ҷумлаи дуюм."></textarea>
+    <div class="row">
+      <label style="margin:0"><input id="approved" type="checkbox"> Сразу разрешить запись</label>
+      <label style="margin:0">Голосов: <input id="voices" type="number" value="5" min="1" max="20" style="width:72px"></label>
+      <button onclick="importTexts()">Добавить</button>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:16px">
+    <div class="row" style="justify-content:space-between;margin-top:0">
+      <h2>Исправления, ожидающие администратора</h2>
+      <button class="secondary" onclick="loadCorrections()">Обновить</button>
+    </div>
+    <div id="corrections" class="muted">Нет загруженных данных.</div>
+  </section>
+</main>
+<script>
+const keyInput = document.getElementById('key');
+keyInput.value = localStorage.getItem('tajikCollectorKey') || 'tajik-stt-local';
+keyInput.addEventListener('change', () => localStorage.setItem('tajikCollectorKey', keyInput.value));
+
+async function api(path, options = {}) {
+  const headers = Object.assign({'X-Project-Key': keyInput.value}, options.headers || {});
+  const response = await fetch(path, Object.assign({}, options, {headers}));
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function showMessage(text, error = false) {
+  const target = document.getElementById('message');
+  target.textContent = text;
+  target.style.color = error ? '#b91c1c' : '#0f766e';
+}
+
+async function refreshStats() {
+  const data = await api('/api/v1/stats');
+  document.getElementById('volunteers').textContent = data.volunteers || 0;
+  document.getElementById('textsApproved').textContent = data.texts.approved || 0;
+  document.getElementById('textsPending').textContent = data.texts.pending_review || 0;
+  document.getElementById('audioApproved').textContent = data.recordings.approved || 0;
+  document.getElementById('audioPending').textContent = data.recordings.pending || 0;
+}
+
+async function importTexts() {
+  const lines = document.getElementById('texts').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  if (!lines.length) return showMessage('Вставьте хотя бы один текст.', true);
+  try {
+    const result = await api('/api/v1/admin/texts/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        texts: lines,
+        source: document.getElementById('source').value,
+        approved: document.getElementById('approved').checked,
+        required_recordings: Number(document.getElementById('voices').value || 5)
+      })
+    });
+    document.getElementById('texts').value = '';
+    showMessage(`Добавлено: ${result.inserted}; дубликатов: ${result.duplicates}; пропущено: ${result.skipped}`);
+    await refreshStats();
+  } catch (error) { showMessage(error.message, true); }
+}
+
+async function loadCorrections() {
+  const root = document.getElementById('corrections');
+  const data = await api('/api/v1/admin/texts/needs-admin');
+  root.replaceChildren();
+  if (!data.texts.length) {
+    root.textContent = 'Исправлений пока нет.';
+    return;
+  }
+  for (const item of data.texts) {
+    const block = document.createElement('div');
+    block.className = 'review';
+    const info = document.createElement('div');
+    info.textContent = `#${item.id} — ${item.source || 'без источника'}`;
+    info.className = 'muted';
+    const area = document.createElement('textarea');
+    area.value = item.corrections || item.content;
+    const original = document.createElement('p');
+    original.textContent = `Оригинал: ${item.content}`;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const accept = document.createElement('button');
+    accept.textContent = 'Принять исправление';
+    accept.onclick = () => resolveText(item.id, 'approve', area.value);
+    const reject = document.createElement('button');
+    reject.className = 'danger';
+    reject.textContent = 'Отклонить текст';
+    reject.onclick = () => resolveText(item.id, 'reject', item.content);
+    row.append(accept, reject);
+    block.append(info, original, area, row);
+    root.append(block);
+  }
+}
+
+async function resolveText(textId, action, content) {
+  try {
+    await api('/api/v1/admin/texts/resolve', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text_id: textId, action, content})
+    });
+    showMessage(`Текст #${textId} обработан.`);
+    await refreshAll();
+  } catch (error) { showMessage(error.message, true); }
+}
+
+async function refreshAll() {
+  try { await Promise.all([refreshStats(), loadCorrections()]); showMessage('Готово.'); }
+  catch (error) { showMessage(error.message, true); }
+}
+refreshAll();
+</script>
+</body>
+</html>

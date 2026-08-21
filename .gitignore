@@ -1,0 +1,24 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+
+# Local collector database and audio (never commit volunteer recordings)
+backend/runtime/
+backend/exports/
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db

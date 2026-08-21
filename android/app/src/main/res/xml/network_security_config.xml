@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Local HTTP is intentional for the first LAN-only MVP. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
