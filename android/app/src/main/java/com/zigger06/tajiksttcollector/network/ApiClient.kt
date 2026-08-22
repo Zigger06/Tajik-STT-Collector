@@ -70,7 +70,13 @@ class ApiClient(private val settings: AppSettings) {
         AudioReviewTask(
             id = task.getString("id"),
             text = task.getString("text"),
-            audioUrl = task.getString("audio_url"),
+            audioUrl = task.getString("audio_url").let { audioUrl ->
+                if (audioUrl.startsWith("http://") || audioUrl.startsWith("https://")) {
+                    audioUrl
+                } else {
+                    "$baseUrl/${audioUrl.trimStart('/')}"
+                }
+            },
             durationMs = task.optLong("duration_ms"),
             sampleRate = task.optInt("sample_rate", 16000),
         )
