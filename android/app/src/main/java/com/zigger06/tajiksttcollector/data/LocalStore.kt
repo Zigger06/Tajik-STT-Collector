@@ -21,10 +21,7 @@ class LocalStore(context: Context) {
             displayName = preferences.getString("display_name", "") ?: "",
             region = preferences.getString("region", "") ?: "",
             dialect = preferences.getString("dialect", "") ?: "",
-            serverUrl = preferences.getString("server_url", "http://10.0.2.2:8000")
-                ?: "http://10.0.2.2:8000",
-            projectKey = preferences.getString("project_key", "tajik-stt-local")
-                ?: "tajik-stt-local",
+            serverUrl = preferences.getString("server_url", "") ?: "",
             consent = preferences.getBoolean("consent", false),
         )
     }
@@ -36,9 +33,14 @@ class LocalStore(context: Context) {
             .putString("region", settings.region.trim())
             .putString("dialect", settings.dialect.trim())
             .putString("server_url", settings.serverUrl.trim().trimEnd('/'))
-            .putString("project_key", settings.projectKey.trim())
             .putBoolean("consent", settings.consent)
             .apply()
+    }
+
+    fun cachedSubmittedCount(): Int = preferences.getInt("submitted_count", 0)
+
+    fun saveSubmittedCount(count: Int) {
+        preferences.edit().putInt("submitted_count", count.coerceAtLeast(0)).apply()
     }
 
     fun addPending(recording: PendingRecording) {
