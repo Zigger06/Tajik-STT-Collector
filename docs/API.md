@@ -1,11 +1,11 @@
-# Local API
+# Collector API
 
-Default base URL: `http://<PC-IP>:8000`
+Online base URL: `https://<machine>.<tailnet>.ts.net`
 
-All `/api/v1/*` requests require:
+Volunteer endpoints exposed through Funnel do not require a password or project key. The local admin panel and `/api/v1/admin/*` remain protected with:
 
 ```text
-X-Project-Key: tajik-stt-local
+X-Project-Key: <local-admin-key>
 ```
 
 ## Endpoints
@@ -14,6 +14,7 @@ X-Project-Key: tajik-stt-local
 |---|---|---|
 | GET | `/health` | Server readiness |
 | POST | `/api/v1/volunteers` | Register/update an anonymous volunteer |
+| GET | `/api/v1/volunteers/stats?volunteer_id=...` | Get personal recording counts |
 | GET | `/api/v1/tasks/recording?volunteer_id=...` | Get one approved text to record |
 | POST | `/api/v1/recordings?...` | Upload a raw `audio/wav` body |
 | GET | `/api/v1/tasks/text-review?volunteer_id=...` | Get one text-review task |
@@ -24,5 +25,7 @@ X-Project-Key: tajik-stt-local
 | POST | `/api/v1/admin/texts/import` | Import text items |
 | GET | `/api/v1/admin/texts/needs-admin` | List proposed corrections |
 | POST | `/api/v1/admin/texts/resolve` | Approve a correction or reject a text |
+
+The public Funnel handler exposes only volunteer registration, recording, review, media and personal-stat endpoints. It returns 404 for the admin page, global statistics and all `/api/v1/admin/*` routes.
 
 The backend accepts only RIFF/WAVE uploads up to 25 MB. The Android client records mono, PCM 16-bit, preferring 16 kHz with 48/44.1 kHz fallback.
