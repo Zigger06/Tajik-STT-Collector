@@ -735,6 +735,7 @@ private fun AudioReviewScreen(
     onBack: () -> Unit,
     showMessage: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var task by remember { mutableStateOf<AudioReviewTask?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -805,7 +806,8 @@ private fun AudioReviewScreen(
                             error = ""
                             player = MediaPlayer().apply {
                                 setDataSource(
-                                    current.audioUrl,
+                                    context,
+                                    android.net.Uri.parse(current.audioUrl),
                                     mapOf("X-Project-Key" to settings.projectKey),
                                 )
                                 setOnPreparedListener { media -> media.start(); playing = true }
