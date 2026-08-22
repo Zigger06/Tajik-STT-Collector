@@ -79,6 +79,35 @@ class HttpApiTest(unittest.TestCase):
         task = self.request(f"/api/v1/tasks/recording?volunteer_id={volunteer_id}")
         self.assertEqual(task["task"]["content"], "Ин як матни санҷишӣ аст.")
 
+    def test_public_handler_hides_admin_routes(self) -> None:
+        handler = make_handler(
+            self.service,
+            "client-key",
+            self.admin,
+            allow_admin=False,
+        )
+        public_server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        public_thread = threading.Thread(target=public_server.serve_forever, daemon=True)
+        public_thread.start()
+        public_base = f"http://127.0.0.1:{public_server.server_port}"
+
+        try:
+            for path in ("/admin", "/api/v1/stats", "/api/v1/admin/texts/needs-admin"):
+                request = urllib.request.Request(
+                    public_base + path,
+                    headers={"X-Project-Key": "client-key"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(request, timeout=3)
+                self.assertEqual(missing.exception.code, 404)
+
+            with urllib.request.urlopen(public_base + "/health", timeout=3) as response:
+                self.assertTrue(json.loads(response.read())["ok"])
+        finally:
+            public_server.shutdown()
+            public_server.server_close()
+            public_thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

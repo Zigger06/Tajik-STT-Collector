@@ -8,7 +8,6 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlencode
 
 from .database import Database
 
@@ -319,7 +318,7 @@ class CollectorService:
             )
         return {"text_id": text_id, "status": status}
 
-    def get_audio_review_task(self, volunteer_id: str, base_url: str, api_key: str) -> dict | None:
+    def get_audio_review_task(self, volunteer_id: str) -> dict | None:
         volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
         self._require_volunteer(volunteer_id)
         with self.database.connect() as connection:
@@ -342,9 +341,10 @@ class CollectorService:
         if not row:
             return None
         result = dict(row)
-        result["audio_url"] = (
-            f"{base_url.rstrip('/')}/media/{row['id']}.wav?{urlencode({'key': api_key})}"
-        )
+        # Keep the access key out of URLs: query strings can be copied or logged.
+        # Android resolves this relative path against its configured HTTPS server
+        # and sends X-Project-Key as a request header when playing the audio.
+        result["audio_url"] = f"/media/{row['id']}.wav"
         return result
 
     def submit_audio_review(

@@ -35,7 +35,7 @@
 
   <section class="card" style="margin-top:22px">
     <label for="key">Ключ проекта</label>
-    <input id="key" value="tajik-stt-local" autocomplete="off">
+    <input id="key" placeholder="Ключ администратора из окна сервера" autocomplete="off">
     <div class="row">
       <button onclick="refreshAll()">Обновить статистику</button>
       <span id="message"></span>
@@ -73,7 +73,7 @@
 </main>
 <script>
 const keyInput = document.getElementById('key');
-keyInput.value = localStorage.getItem('tajikCollectorKey') || 'tajik-stt-local';
+keyInput.value = localStorage.getItem('tajikCollectorKey') || '';
 keyInput.addEventListener('change', () => localStorage.setItem('tajikCollectorKey', keyInput.value));
 
 async function api(path, options = {}) {

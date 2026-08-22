@@ -67,6 +67,11 @@ class CollectorServiceTest(unittest.TestCase):
         )
         self.assertEqual(submitted["status"], "pending")
 
+        audio_task = self.service.get_audio_review_task(self.volunteers[1])
+        self.assertEqual(audio_task["id"], recording_id)
+        self.assertEqual(audio_task["audio_url"], f"/media/{recording_id}.wav")
+        self.assertNotIn("key", audio_task["audio_url"])
+
         with self.assertRaises(ConflictError):
             self.service.submit_audio_review(
                 recording_id, self.volunteers[0], "approve"
