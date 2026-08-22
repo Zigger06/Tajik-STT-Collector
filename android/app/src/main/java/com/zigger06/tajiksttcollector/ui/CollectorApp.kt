@@ -597,6 +597,7 @@ private fun RecordingScreen(
                                     api.registerVolunteer()
                                     api.uploadRecording(pending)
                                     store.removePending(pending.id)
+                                    recording.file.delete()
                                     onQueueChanged()
                                     showMessage("Сабт фиристода шуд. Раҳмат!")
                                     result = null

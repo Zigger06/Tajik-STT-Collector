@@ -601,6 +601,204 @@ h1 em {
   padding: 112px 0;
 }
 
+.install-section {
+  padding: 94px 0 104px;
+  background:
+    radial-gradient(circle at 92% 8%, rgba(223, 245, 114, 0.24), transparent 25%),
+    #f4f8f5;
+}
+
+.install-panel {
+  padding: 58px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 36px;
+  box-shadow: var(--shadow);
+}
+
+.install-heading {
+  max-width: 820px;
+}
+
+.install-heading h2 {
+  margin-bottom: 18px;
+  font-size: clamp(36px, 4.5vw, 56px);
+  font-weight: 850;
+}
+
+.install-heading > p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.install-alert {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  margin: 36px 0;
+  padding: 23px 25px;
+  gap: 17px;
+  color: #523f0f;
+  background: #fff8dc;
+  border: 1px solid #eedf9f;
+  border-radius: 18px;
+}
+
+.alert-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: #5b450c;
+  background: #f4db78;
+  border-radius: 13px;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.install-alert strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 17px;
+}
+
+.install-alert p {
+  margin: 0;
+  color: #715c22;
+}
+
+.install-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 0 0 30px;
+  padding: 0;
+  gap: 14px;
+  list-style: none;
+}
+
+.install-steps li {
+  min-width: 0;
+  padding: 22px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.install-steps li > span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 18px;
+  color: var(--white);
+  background: var(--green);
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.install-steps strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 16px;
+}
+
+.install-steps p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.install-steps code {
+  color: var(--green-dark);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.device-guides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 30px;
+  gap: 12px;
+}
+
+.device-guides details {
+  padding: 0 20px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 15px;
+}
+
+.device-guides summary {
+  position: relative;
+  padding: 17px 34px 17px 0;
+  cursor: pointer;
+  font-weight: 850;
+  list-style: none;
+}
+
+.device-guides summary::-webkit-details-marker {
+  display: none;
+}
+
+.device-guides summary::after {
+  position: absolute;
+  top: 17px;
+  right: 0;
+  content: "+";
+  color: var(--green);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.device-guides details[open] summary::after {
+  content: "−";
+}
+
+.device-guides p {
+  margin: -2px 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.install-download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 26px;
+  gap: 24px;
+  color: var(--white);
+  background: var(--green-dark);
+  border-radius: 20px;
+}
+
+.install-download > div {
+  display: grid;
+}
+
+.install-download strong {
+  font-size: 17px;
+}
+
+.install-download span {
+  margin-top: 3px;
+  color: #aac4bc;
+  font-size: 13px;
+}
+
+.install-download .button-primary {
+  flex: 0 0 auto;
+  background: var(--mint);
+  color: var(--green-deep);
+  box-shadow: none;
+}
+
+.install-download .button-primary:hover {
+  background: #91ebcc;
+  box-shadow: none;
+}
+
 .section-heading {
   max-width: 700px;
   margin: 0 auto 54px;
@@ -1187,6 +1385,11 @@ h1 em {
   text-underline-offset: 3px;
 }
 
+.legal-content .button-primary {
+  color: var(--white);
+  text-decoration: none;
+}
+
 .legal-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1250,6 +1453,10 @@ h1 em {
 
   .task-card {
     padding: 26px;
+  }
+
+  .install-steps {
+    grid-template-columns: 1fr 1fr;
   }
 
   .steps-grid,
@@ -1324,6 +1531,14 @@ h1 em {
   }
 
   .task-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .install-panel {
+    padding: 42px;
+  }
+
+  .device-guides {
     grid-template-columns: 1fr;
   }
 
@@ -1428,6 +1643,42 @@ h1 em {
 
   .section {
     padding: 78px 0;
+  }
+
+  .install-section {
+    padding: 54px 0 64px;
+  }
+
+  .install-panel {
+    padding: 28px 20px;
+    border-radius: 25px;
+  }
+
+  .install-heading h2 {
+    font-size: 35px;
+  }
+
+  .install-heading > p:last-child {
+    font-size: 16px;
+  }
+
+  .install-alert {
+    grid-template-columns: 1fr;
+    padding: 20px;
+  }
+
+  .install-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .install-download {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 22px;
+  }
+
+  .install-download .button {
+    width: 100%;
   }
 
   .section-heading {
