@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import threading
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +22,7 @@ def make_handler(
     api_key: str,
     admin_file: str | Path,
     public_base_url: str = "",
+    allow_admin: bool = True,
 ) -> Type[BaseHTTPRequestHandler]:
     admin_path = Path(admin_file)
 
@@ -38,7 +40,10 @@ def make_handler(
             try:
                 parsed = urlparse(self.path)
                 if parsed.path in ("/", "/admin"):
-                    self._serve_admin()
+                    if allow_admin:
+                        self._serve_admin()
+                    else:
+                        self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                     return
                 if parsed.path == "/health":
                     self._send_json({"ok": True, "service": "tajik-stt-collector"})
@@ -48,7 +53,7 @@ def make_handler(
                     return
 
                 query = parse_qs(parsed.query)
-                if parsed.path == "/api/v1/stats":
+                if parsed.path == "/api/v1/stats" and allow_admin:
                     self._send_json(service.stats())
                 elif parsed.path == "/api/v1/tasks/recording":
                     task = service.get_recording_task(self._required_query(query, "volunteer_id"))
@@ -58,11 +63,9 @@ def make_handler(
                     self._send_json({"task": task})
                 elif parsed.path == "/api/v1/tasks/audio-review":
                     volunteer_id = self._required_query(query, "volunteer_id")
-                    task = service.get_audio_review_task(
-                        volunteer_id, self._base_url(), api_key
-                    )
+                    task = service.get_audio_review_task(volunteer_id)
                     self._send_json({"task": task})
-                elif parsed.path == "/api/v1/admin/texts/needs-admin":
+                elif parsed.path == "/api/v1/admin/texts/needs-admin" and allow_admin:
                     self._send_json({"texts": service.list_needs_admin()})
                 elif parsed.path.startswith("/media/") and parsed.path.endswith(".wav"):
                     recording_id = parsed.path.removeprefix("/media/").removesuffix(".wav")
@@ -126,7 +129,7 @@ def make_handler(
                         reason=body.get("reason", ""),
                     )
                     self._send_json(result, HTTPStatus.CREATED)
-                elif parsed.path == "/api/v1/admin/texts/import":
+                elif parsed.path == "/api/v1/admin/texts/import" and allow_admin:
                     body = self._read_json()
                     raw_texts = body.get("texts", [])
                     if not isinstance(raw_texts, list):
@@ -142,7 +145,7 @@ def make_handler(
                         required_recordings=int(body.get("required_recordings", 5)),
                     )
                     self._send_json(result, HTTPStatus.CREATED)
-                elif parsed.path == "/api/v1/admin/texts/resolve":
+                elif parsed.path == "/api/v1/admin/texts/resolve" and allow_admin:
                     body = self._read_json()
                     result = service.resolve_text(
                         text_id=int(body.get("text_id", 0)),
@@ -161,8 +164,7 @@ def make_handler(
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
         def _is_authorized(self, parsed) -> bool:
-            query = parse_qs(parsed.query)
-            supplied = self.headers.get("X-Project-Key", "") or query.get("key", [""])[0]
+            supplied = self.headers.get("X-Project-Key", "")
             return bool(api_key) and supplied == api_key
 
         def _read_json(self) -> dict:
@@ -190,12 +192,6 @@ def make_handler(
             if not value:
                 raise CollectorError(f"missing query parameter: {name}")
             return value
-
-        def _base_url(self) -> str:
-            if public_base_url:
-                return public_base_url
-            host = self.headers.get("Host", "127.0.0.1:8000")
-            return f"http://{host}"
 
         def _serve_admin(self) -> None:
             if not admin_path.exists():
@@ -247,8 +243,11 @@ def serve(
     api_key: str,
     admin_file: str | Path,
     public_base_url: str = "",
+    allow_admin: bool = True,
 ) -> None:
-    handler = make_handler(service, api_key, admin_file, public_base_url)
+    handler = make_handler(
+        service, api_key, admin_file, public_base_url, allow_admin=allow_admin
+    )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Tajik STT Collector: http://127.0.0.1:{port}/admin")
     print(f"Android API: http://<PC-IP>:{port}")
@@ -259,3 +258,46 @@ def serve(
         print("\nServer stopped.")
     finally:
         server.server_close()
+
+
+def serve_online(
+    service: CollectorService,
+    public_host: str,
+    public_port: int,
+    client_key: str,
+    admin_host: str,
+    admin_port: int,
+    admin_key: str,
+    admin_file: str | Path,
+) -> None:
+    """Run a Funnel-facing API and a separate computer-only admin panel."""
+    public_handler = make_handler(
+        service,
+        client_key,
+        admin_file,
+        allow_admin=False,
+    )
+    admin_handler = make_handler(
+        service,
+        admin_key,
+        admin_file,
+        allow_admin=True,
+    )
+    public_server = ThreadingHTTPServer((public_host, public_port), public_handler)
+    admin_server = ThreadingHTTPServer((admin_host, admin_port), admin_handler)
+    public_thread = threading.Thread(target=public_server.serve_forever, daemon=True)
+    public_thread.start()
+
+    print(f"Public Android API target: http://{public_host}:{public_port}")
+    print(f"Private admin panel: http://127.0.0.1:{admin_port}/admin")
+    print("The admin panel is not exposed through Tailscale Funnel.")
+    print("Press Ctrl+C to stop both servers.")
+    try:
+        admin_server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nServers stopped.")
+    finally:
+        admin_server.server_close()
+        public_server.shutdown()
+        public_server.server_close()
+        public_thread.join(timeout=2)
