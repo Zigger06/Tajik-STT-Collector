@@ -1385,6 +1385,11 @@ h1 em {
   text-underline-offset: 3px;
 }
 
+.legal-content .button-primary {
+  color: var(--white);
+  text-decoration: none;
+}
+
 .legal-meta {
   display: flex;
   flex-wrap: wrap;
