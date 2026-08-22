@@ -10,6 +10,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.network.ApiException
+import java.io.File
 import java.io.IOException
 
 class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -23,6 +24,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             for (recording in store.pendingRecordings()) {
                 api.uploadRecording(recording)
                 store.removePending(recording.id)
+                File(recording.filePath).delete()
             }
             Result.success()
         } catch (error: ApiException) {
