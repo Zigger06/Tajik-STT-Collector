@@ -6,13 +6,11 @@ data class AppSettings(
     val region: String,
     val dialect: String,
     val serverUrl: String,
-    val projectKey: String,
     val consent: Boolean,
 ) {
     val isConfigured: Boolean
         get() = displayName.isNotBlank() &&
             serverUrl.isNotBlank() &&
-            projectKey.isNotBlank() &&
             consent
 }
 
@@ -22,6 +20,13 @@ data class TextTask(
     val source: String,
     val currentRecordings: Int = 0,
     val requiredRecordings: Int = 5,
+)
+
+data class VolunteerStats(
+    val submitted: Int,
+    val pendingReview: Int,
+    val approved: Int,
+    val rejected: Int,
 )
 
 data class AudioReviewTask(
