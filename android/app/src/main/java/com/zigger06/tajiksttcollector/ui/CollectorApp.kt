@@ -52,7 +52,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -96,7 +95,9 @@ import com.zigger06.tajiksttcollector.data.LocalStore
 import com.zigger06.tajiksttcollector.data.PendingRecording
 import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.UploadWorker
+import com.zigger06.tajiksttcollector.data.VolunteerStats
 import com.zigger06.tajiksttcollector.network.ApiClient
+import com.zigger06.tajiksttcollector.network.ServerConfig
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
@@ -116,9 +117,24 @@ fun CollectorApp(store: LocalStore) {
         mutableStateOf(if (settings.isConfigured) Screen.HOME else Screen.SETUP)
     }
     var pendingCount by remember { mutableIntStateOf(store.pendingCount()) }
+    var volunteerStats by remember {
+        mutableStateOf(VolunteerStats(store.cachedSubmittedCount(), 0, 0, 0))
+    }
 
-    LaunchedEffect(screen) {
-        if (screen == Screen.HOME) pendingCount = store.pendingCount()
+    LaunchedEffect(screen, pendingCount) {
+        if (screen == Screen.HOME) {
+            pendingCount = store.pendingCount()
+            if (settings.isConfigured) {
+                try {
+                    volunteerStats = ApiClient(settings).volunteerStats()
+                    store.saveSubmittedCount(volunteerStats.submitted)
+                } catch (_: Exception) {
+                    volunteerStats = volunteerStats.copy(
+                        submitted = store.cachedSubmittedCount(),
+                    )
+                }
+            }
+        }
     }
 
     BackHandler(enabled = screen != Screen.HOME && settings.isConfigured) {
@@ -133,6 +149,7 @@ fun CollectorApp(store: LocalStore) {
             Screen.HOME -> HomeScreen(
                 modifier = Modifier.padding(scaffoldPadding),
                 pendingCount = pendingCount,
+                volunteerStats = volunteerStats,
                 onRecord = { screen = Screen.RECORD },
                 onTextReview = { screen = Screen.TEXT_REVIEW },
                 onAudioReview = { screen = Screen.AUDIO_REVIEW },
@@ -151,11 +168,14 @@ fun CollectorApp(store: LocalStore) {
                 onSave = { candidate ->
                     scope.launch {
                         try {
-                            val api = ApiClient(candidate)
+                            val configured = candidate.copy(
+                                serverUrl = ServerConfig.resolve(candidate.serverUrl),
+                            )
+                            val api = ApiClient(configured)
                             check(api.checkHealth()) { "Сервер ҷавоб надод." }
                             api.registerVolunteer()
-                            store.saveSettings(candidate)
-                            settings = candidate
+                            store.saveSettings(configured)
+                            settings = configured
                             UploadWorker.schedule(context)
                             screen = Screen.HOME
                             snackbar.showSnackbar("Пайвастшавӣ муваффақ шуд.")
@@ -196,6 +216,7 @@ fun CollectorApp(store: LocalStore) {
 private fun HomeScreen(
     modifier: Modifier,
     pendingCount: Int,
+    volunteerStats: VolunteerStats,
     onRecord: () -> Unit,
     onTextReview: () -> Unit,
     onAudioReview: () -> Unit,
@@ -225,6 +246,30 @@ private fun HomeScreen(
         }
 
         Spacer(Modifier.height(4.dp))
+        OutlinedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Омори ман", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    StatisticValue("Ҳамагӣ", volunteerStats.submitted + pendingCount)
+                    StatisticValue("Фиристода", volunteerStats.submitted)
+                    StatisticValue("Дар навбат", pendingCount)
+                }
+                Text(
+                    "Дар санҷиш: ${volunteerStats.pendingReview} · Қабулшуда: ${volunteerStats.approved}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         ActionCard(
             icon = Icons.Default.Mic,
             title = "Сабти овоз",
@@ -269,6 +314,18 @@ private fun HomeScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StatisticValue(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value.toString(), fontSize = 25.sp, fontWeight = FontWeight.Black)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -328,15 +385,13 @@ private fun SetupScreen(
     var displayName by remember(initial) { mutableStateOf(initial.displayName) }
     var region by remember(initial) { mutableStateOf(initial.region) }
     var dialect by remember(initial) { mutableStateOf(initial.dialect) }
-    var serverUrl by remember(initial) { mutableStateOf(initial.serverUrl) }
-    var projectKey by remember(initial) { mutableStateOf(initial.projectKey) }
     var consent by remember(initial) { mutableStateOf(initial.consent) }
     val uriHandler = LocalUriHandler.current
 
     ScreenColumn(modifier) {
         ScreenHeader("Танзими аввал", onBack.takeIf { canGoBack })
         Text(
-            "Барнома аз ҳар шабака кор мекунад, агар компютери сервер ва интернет фаъол бошанд.",
+            "Номи худро ворид кунед ва барои сабт, санҷиши матн ва санҷиши аудио саҳм гузоред.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -359,22 +414,6 @@ private fun SetupScreen(
             onValueChange = { dialect = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Лаҳҷа (ихтиёрӣ)") },
-            singleLine = true,
-        )
-        HorizontalDivider()
-        OutlinedTextField(
-            value = serverUrl,
-            onValueChange = { serverUrl = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Суроғаи сервер") },
-            supportingText = { Text("Мисол: https://номи-сервер.ts.net") },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = projectKey,
-            onValueChange = { projectKey = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Калиди лоиҳа") },
             singleLine = true,
         )
         Row(verticalAlignment = Alignment.Top) {
@@ -408,18 +447,14 @@ private fun SetupScreen(
                         displayName = displayName.trim(),
                         region = region.trim(),
                         dialect = dialect.trim(),
-                        serverUrl = serverUrl.trim().trimEnd('/'),
-                        projectKey = projectKey.trim(),
                         consent = consent,
                     ),
                 )
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = displayName.trim().length >= 2 &&
-                (serverUrl.startsWith("https://") || serverUrl.startsWith("http://")) &&
-                projectKey.isNotBlank() && consent,
+            enabled = displayName.trim().length >= 2 && consent,
         ) {
-            Text("Пайваст кардан", modifier = Modifier.padding(vertical = 5.dp))
+            Text("Оғоз кардан", modifier = Modifier.padding(vertical = 5.dp))
         }
     }
 }
@@ -735,7 +770,6 @@ private fun AudioReviewScreen(
     onBack: () -> Unit,
     showMessage: (String) -> Unit,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var task by remember { mutableStateOf<AudioReviewTask?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -805,11 +839,7 @@ private fun AudioReviewScreen(
                         else {
                             error = ""
                             player = MediaPlayer().apply {
-                                setDataSource(
-                                    context,
-                                    android.net.Uri.parse(current.audioUrl),
-                                    mapOf("X-Project-Key" to settings.projectKey),
-                                )
+                                setDataSource(current.audioUrl)
                                 setOnPreparedListener { media -> media.start(); playing = true }
                                 setOnCompletionListener { stopPlayer() }
                                 setOnErrorListener { _, _, _ ->
