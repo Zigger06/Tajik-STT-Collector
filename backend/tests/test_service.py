@@ -67,6 +67,10 @@ class CollectorServiceTest(unittest.TestCase):
         )
         self.assertEqual(submitted["status"], "pending")
 
+        stats = self.service.volunteer_stats(self.volunteers[0])
+        self.assertEqual(stats["submitted"], 1)
+        self.assertEqual(stats["pending_review"], 1)
+
         audio_task = self.service.get_audio_review_task(self.volunteers[1])
         self.assertEqual(audio_task["id"], recording_id)
         self.assertEqual(audio_task["audio_url"], f"/media/{recording_id}.wav")
@@ -84,6 +88,10 @@ class CollectorServiceTest(unittest.TestCase):
             recording_id, self.volunteers[2], "approve"
         )
         self.assertEqual(review_two["status"], "approved")
+        stats = self.service.volunteer_stats(self.volunteers[0])
+        self.assertEqual(stats["submitted"], 1)
+        self.assertEqual(stats["approved"], 1)
+        self.assertEqual(stats["pending_review"], 0)
 
         output = Path(self.temp.name) / "export"
         exported = self.service.export_dataset(output)
