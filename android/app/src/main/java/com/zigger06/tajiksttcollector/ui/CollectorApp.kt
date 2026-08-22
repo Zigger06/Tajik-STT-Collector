@@ -82,6 +82,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -101,6 +102,9 @@ import java.io.File
 import java.util.UUID
 
 private enum class Screen { HOME, SETUP, RECORD, TEXT_REVIEW, AUDIO_REVIEW }
+
+private const val PRIVACY_URL = "https://zigger06.github.io/Tajik-STT-Collector/privacy.html"
+private const val TERMS_URL = "https://zigger06.github.io/Tajik-STT-Collector/terms.html"
 
 @Composable
 fun CollectorApp(store: LocalStore) {
@@ -327,6 +331,7 @@ private fun SetupScreen(
     var serverUrl by remember(initial) { mutableStateOf(initial.serverUrl) }
     var projectKey by remember(initial) { mutableStateOf(initial.projectKey) }
     var consent by remember(initial) { mutableStateOf(initial.consent) }
+    val uriHandler = LocalUriHandler.current
 
     ScreenColumn(modifier) {
         ScreenHeader("Танзими аввал", onBack.takeIf { canGoBack })
@@ -339,6 +344,7 @@ private fun SetupScreen(
             onValueChange = { displayName = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Ном ё рамзи шумо") },
+            supportingText = { Text("Барои махфият метавонед тахаллус истифода баред") },
             singleLine = true,
         )
         OutlinedTextField(
@@ -374,9 +380,26 @@ private fun SetupScreen(
         Row(verticalAlignment = Alignment.Top) {
             Checkbox(checked = consent, onCheckedChange = { consent = it })
             Text(
-                "Ман барои истифодаи сабтҳои худ дар таҳқиқ ва омӯзиши Tajik‑STT розӣ ҳастам.",
+                "Ман 18-сола ё калонтар ҳастам, Сиёсати махфият ва Шартҳои истифодаро хондам ва барои истифодаи сабтҳои овозам дар таҳқиқ ва омӯзиши Tajik‑STT розӣ ҳастам.",
                 modifier = Modifier.padding(top = 12.dp),
             )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(
+                onClick = { uriHandler.openUri(PRIVACY_URL) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Сиёсати махфият")
+            }
+            TextButton(
+                onClick = { uriHandler.openUri(TERMS_URL) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Шартҳои истифода")
+            }
         }
         Button(
             onClick = {
