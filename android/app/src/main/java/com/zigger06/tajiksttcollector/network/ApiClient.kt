@@ -4,6 +4,7 @@ import com.zigger06.tajiksttcollector.data.AppSettings
 import com.zigger06.tajiksttcollector.data.AudioReviewTask
 import com.zigger06.tajiksttcollector.data.PendingRecording
 import com.zigger06.tajiksttcollector.data.TextTask
+import com.zigger06.tajiksttcollector.data.VolunteerStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -48,7 +49,20 @@ class ApiClient(private val settings: AppSettings) {
             .addQueryParameter("volunteer_id", settings.volunteerId)
             .build()
         parseTextTask(
-            execute(authenticated(Request.Builder().url(url).get()).build()).optJSONObject("task"),
+            execute(Request.Builder().url(url).get().build()).optJSONObject("task"),
+        )
+    }
+
+    suspend fun volunteerStats(): VolunteerStats = withContext(Dispatchers.IO) {
+        val url = "$baseUrl/api/v1/volunteers/stats".toHttpUrl().newBuilder()
+            .addQueryParameter("volunteer_id", settings.volunteerId)
+            .build()
+        val stats = execute(Request.Builder().url(url).get().build())
+        VolunteerStats(
+            submitted = stats.optInt("submitted", 0),
+            pendingReview = stats.optInt("pending_review", 0),
+            approved = stats.optInt("approved", 0),
+            rejected = stats.optInt("rejected", 0),
         )
     }
 
@@ -57,7 +71,7 @@ class ApiClient(private val settings: AppSettings) {
             .addQueryParameter("volunteer_id", settings.volunteerId)
             .build()
         parseTextTask(
-            execute(authenticated(Request.Builder().url(url).get()).build()).optJSONObject("task"),
+            execute(Request.Builder().url(url).get().build()).optJSONObject("task"),
         )
     }
 
@@ -65,17 +79,16 @@ class ApiClient(private val settings: AppSettings) {
         val url = "$baseUrl/api/v1/tasks/audio-review".toHttpUrl().newBuilder()
             .addQueryParameter("volunteer_id", settings.volunteerId)
             .build()
-        val task = execute(authenticated(Request.Builder().url(url).get()).build()).optJSONObject("task")
+        val task = execute(Request.Builder().url(url).get().build()).optJSONObject("task")
             ?: return@withContext null
+        val audioUrl = task.getString("audio_url")
         AudioReviewTask(
             id = task.getString("id"),
             text = task.getString("text"),
-            audioUrl = task.getString("audio_url").let { audioUrl ->
-                if (audioUrl.startsWith("http://") || audioUrl.startsWith("https://")) {
-                    audioUrl
-                } else {
-                    "$baseUrl/${audioUrl.trimStart('/')}"
-                }
+            audioUrl = if (audioUrl.startsWith("http://") || audioUrl.startsWith("https://")) {
+                audioUrl
+            } else {
+                "$baseUrl/${audioUrl.trimStart('/')}"
             },
             durationMs = task.optLong("duration_ms"),
             sampleRate = task.optInt("sample_rate", 16000),
@@ -92,11 +105,10 @@ class ApiClient(private val settings: AppSettings) {
             .addQueryParameter("duration_ms", recording.durationMs.toString())
             .addQueryParameter("sample_rate", recording.sampleRate.toString())
             .build()
-        val request = authenticated(
-            Request.Builder()
-                .url(url)
-                .post(file.asRequestBody("audio/wav".toMediaType())),
-        ).build()
+        val request = Request.Builder()
+            .url(url)
+            .post(file.asRequestBody("audio/wav".toMediaType()))
+            .build()
         execute(request)
         Unit
     }
@@ -127,11 +139,8 @@ class ApiClient(private val settings: AppSettings) {
         val request = Request.Builder()
             .url("$baseUrl$path")
             .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return authenticated(request).build()
+        return request.build()
     }
-
-    private fun authenticated(builder: Request.Builder): Request.Builder =
-        builder.header("X-Project-Key", settings.projectKey)
 
     private fun execute(request: Request): JSONObject {
         client.newCall(request).execute().use { response ->
