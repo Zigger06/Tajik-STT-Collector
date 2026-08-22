@@ -336,7 +336,7 @@ private fun SetupScreen(
     ScreenColumn(modifier) {
         ScreenHeader("Танзими аввал", onBack.takeIf { canGoBack })
         Text(
-            "Компютере, ки серверро иҷро мекунад, бояд дастрас бошад.",
+            "Барнома аз ҳар шабака кор мекунад, агар компютери сервер ва интернет фаъол бошанд.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -367,7 +367,7 @@ private fun SetupScreen(
             onValueChange = { serverUrl = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Суроғаи сервер") },
-            supportingText = { Text("Мисол: http://192.168.1.10:8000") },
+            supportingText = { Text("Мисол: https://номи-сервер.ts.net") },
             singleLine = true,
         )
         OutlinedTextField(
@@ -416,7 +416,8 @@ private fun SetupScreen(
             },
             modifier = Modifier.fillMaxWidth(),
             enabled = displayName.trim().length >= 2 &&
-                serverUrl.startsWith("http") && projectKey.isNotBlank() && consent,
+                (serverUrl.startsWith("https://") || serverUrl.startsWith("http://")) &&
+                projectKey.isNotBlank() && consent,
         ) {
             Text("Пайваст кардан", modifier = Modifier.padding(vertical = 5.dp))
         }
@@ -803,7 +804,10 @@ private fun AudioReviewScreen(
                         else {
                             error = ""
                             player = MediaPlayer().apply {
-                                setDataSource(current.audioUrl)
+                                setDataSource(
+                                    current.audioUrl,
+                                    mapOf("X-Project-Key" to settings.projectKey),
+                                )
                                 setOnPreparedListener { media -> media.start(); playing = true }
                                 setOnCompletionListener { stopPlayer() }
                                 setOnErrorListener { _, _, _ ->
