@@ -26,6 +26,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 store.removePending(recording.id)
                 File(recording.filePath).delete()
             }
+            store.saveSubmittedCount(api.volunteerStats().submitted)
             Result.success()
         } catch (error: ApiException) {
             if (error.statusCode >= 500) Result.retry() else Result.failure()
