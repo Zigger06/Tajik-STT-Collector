@@ -28,15 +28,18 @@ def load_or_create_online_config() -> dict[str, str]:
         config = json.loads(ONLINE_CONFIG_PATH.read_text(encoding="utf-8"))
     else:
         config = {
-            "client_key": secrets.token_urlsafe(32),
             "admin_key": secrets.token_urlsafe(32),
         }
         ONLINE_CONFIG_PATH.write_text(
             json.dumps(config, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    if not config.get("client_key") or not config.get("admin_key"):
-        raise RuntimeError(f"Invalid online configuration: {ONLINE_CONFIG_PATH}")
+    if not config.get("admin_key"):
+        config["admin_key"] = secrets.token_urlsafe(32)
+        ONLINE_CONFIG_PATH.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     return config
 
 
@@ -86,14 +89,13 @@ def main() -> None:
         )
     elif args.command == "online":
         config = load_or_create_online_config()
-        print(f"Client key for Android: {config['client_key']}")
         print(f"Admin key for local panel: {config['admin_key']}")
-        print(f"Keys are stored only on this PC: {ONLINE_CONFIG_PATH}")
+        print(f"The admin key is stored only on this PC: {ONLINE_CONFIG_PATH}")
+        print("Android volunteers do not need a password or project key.")
         serve_online(
             service=service,
             public_host=args.public_host,
             public_port=args.public_port,
-            client_key=config["client_key"],
             admin_host=args.admin_host,
             admin_port=args.admin_port,
             admin_key=config["admin_key"],
