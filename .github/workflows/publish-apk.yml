@@ -1,10 +1,10 @@
-name: Publish test APK
+name: Publish release APK
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag, for example v0.1.0"
+        description: "Release tag, for example v0.5.0"
         required: true
         default: "v0.5.0"
 
@@ -27,27 +27,86 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Validate release tag
+      - name: Validate release source and tag
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Public APK releases must be built from main."
+            exit 1
+          fi
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Version must look like v0.1.0"
+            echo "::error::Version must look like v0.5.0"
+            exit 1
+          fi
+          APP_VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
+          if [[ "v$APP_VERSION" != "$VERSION" ]]; then
+            echo "::error::Requested tag $VERSION does not match Android versionName $APP_VERSION."
+            exit 1
+          fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "::error::Release $VERSION already exists. Bump versionName/versionCode instead of replacing a distributed APK."
             exit 1
           fi
 
-      - name: Test and build installable APK
+      - name: Validate release-signing secrets
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is not configured in repository Actions secrets."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Restore release keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/tajik-stt-release.jks"
+          chmod 600 "$RUNNER_TEMP/tajik-stt-release.jks"
+
+      - name: Test and build signed release APK
         working-directory: android
+        env:
+          ANDROID_RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/tajik-stt-release.jks
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest assembleDebug
+          ./gradlew testDebugUnitTest verifyReleaseSigningConfigured assembleRelease
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "$APK" ]]; then
+            echo "::error::Signed release APK was not produced at $APK"
+            exit 1
+          fi
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          if [[ -z "$APKSIGNER" ]]; then
+            echo "::error::apksigner was not found in the Android SDK."
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose "$APK"
 
       - name: Prepare download file
         shell: bash
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/Tajik-STT-Collector.apk
+          cp android/app/build/outputs/apk/release/app-release.apk dist/Tajik-STT-Collector.apk
 
       - name: Keep APK as workflow artifact
         uses: actions/upload-artifact@v4
@@ -56,18 +115,14 @@ jobs:
           path: dist/Tajik-STT-Collector.apk
           if-no-files-found: error
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" dist/Tajik-STT-Collector.apk --clobber
-          else
-            gh release create "$VERSION" \
-              "dist/Tajik-STT-Collector.apk#Tajik STT Collector — test APK" \
-              --target "$GITHUB_SHA" \
-              --title "Tajik STT Collector $VERSION" \
-              --notes "Installable MVP test build. Android 8.0 or newer is required."
-          fi
+          gh release create "$VERSION" \
+            "dist/Tajik-STT-Collector.apk#Tajik STT Collector — signed release APK" \
+            --target "$GITHUB_SHA" \
+            --title "Tajik STT Collector $VERSION" \
+            --notes "Signed release build for Tajik STT Collector. Android 8.0 or newer is required."

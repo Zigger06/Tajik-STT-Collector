@@ -6,6 +6,12 @@ local.properties
 *.iml
 captures/
 
+# Android release signing (never commit production keys or passwords)
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
 # Local collector database and audio (never commit volunteer recordings)
 backend/runtime/
 backend/exports/
