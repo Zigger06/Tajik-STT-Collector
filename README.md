@@ -116,6 +116,8 @@ http://127.0.0.1:8001/admin
 
 Для Android Emulator используется адрес `http://10.0.2.2:8000`.
 
+Обычный HTTP разрешён только в `debug`-сборке. `release`-сборка принимает только HTTPS-серверы и использует HTTPS Tailscale Funnel.
+
 ## Где находятся данные
 
 ```text
@@ -161,7 +163,7 @@ py -3 -m unittest discover -s tests -v
 3. Выберите ветку `main`, папку `/docs` и нажмите `Save`.
 4. Сайт появится по адресу `https://zigger06.github.io/Tajik-STT-Collector/`.
 
-Кнопка на сайте скачивает файл `Tajik-STT-Collector.apk` из последнего GitHub Release. Чтобы создать его, откройте `Actions → Publish test APK → Run workflow`, укажите версию вроде `v0.4.0` и дождитесь зелёной галочки.
+Кнопка на сайте скачивает файл `Tajik-STT-Collector.apk` из последнего GitHub Release. Публичный APK создаётся только workflow `Actions → Publish release APK`, только из `main` и только при настроенном постоянном release keystore.
 
 > Для свободного доступа добровольцев сайт и APK должны быть публичными. На GitHub Free для Pages нужен публичный репозиторий; файл Release из приватного репозитория также требует входа и доступа.
 
@@ -174,18 +176,33 @@ py -3 -m unittest discover -s tests -v
 
 Отдельно устанавливать Gradle не нужно: проект использует Gradle Wrapper. Для локального backend нужен Python 3.10 или новее, внешних пакетов нет.
 
-Сборка APK из терминала Android Studio:
+Debug-сборка из терминала Android Studio:
 
 ```powershell
 cd android
 .\gradlew.bat testDebugUnitTest assembleDebug
 ```
 
-Готовый файл появится здесь:
+Готовый debug-файл появится здесь:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## Release signing
+
+Production keystore не хранится в репозитории. Gradle читает его только из переменных окружения:
+
+- `ANDROID_RELEASE_KEYSTORE_PATH`
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
+
+GitHub Actions восстанавливает keystore из секрета `ANDROID_RELEASE_KEYSTORE_BASE64` и использует ещё три Actions secrets с теми же паролем/alias. Workflow перед публикацией проверяет наличие signing-конфигурации и подпись готового APK через `apksigner`.
+
+Keystore создаётся владельцем проекта один раз и должен иметь отдельную резервную копию вне Git. Не меняйте его между релизами: Android считает APK с другой подписью другим издателем.
+
+> APK, опубликованные до перехода на постоянный release key, были debug-signed. Такой APK нельзя обновить поверх установленной debug-версии новым release-signed APK. Перед первым переходом сохраните/дождитесь отправки локальной очереди, удалите старую test-версию и затем установите release-сборку.
 
 ## Ограничения первого MVP
 
