@@ -115,6 +115,22 @@ class CollectorServiceTest(unittest.TestCase):
         )
         self.assertEqual(resolved["status"], "approved")
 
+    def test_recording_task_excludes_texts_staged_on_phone(self) -> None:
+        self.service.import_texts(
+            [
+                {"text": "Матни якум барои сабти гурӯҳӣ."},
+                {"text": "Матни дуюм барои сабти гурӯҳӣ."},
+            ],
+            approved=True,
+        )
+        first = self.service.get_recording_task(self.volunteers[0])
+        second = self.service.get_recording_task(
+            self.volunteers[0],
+            excluded_text_ids=[first["id"]],
+        )
+        self.assertIsNotNone(second)
+        self.assertNotEqual(second["id"], first["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

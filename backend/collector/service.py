@@ -138,12 +138,23 @@ class CollectorService:
                 items = [{"text": line, "source": source} for line in handle]
         return self.import_texts(items, source, approved, required_recordings)
 
-    def get_recording_task(self, volunteer_id: str) -> dict | None:
+    def get_recording_task(
+        self,
+        volunteer_id: str,
+        excluded_text_ids: Iterable[int] = (),
+    ) -> dict | None:
         volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
         self._require_volunteer(volunteer_id)
+        excluded_ids = list(dict.fromkeys(int(value) for value in excluded_text_ids))[:100]
+        exclusion_sql = ""
+        parameters: list[object] = [volunteer_id]
+        if excluded_ids:
+            placeholders = ", ".join("?" for _ in excluded_ids)
+            exclusion_sql = f"AND t.id NOT IN ({placeholders})"
+            parameters.extend(excluded_ids)
         with self.database.connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     t.id, t.content, t.source, t.required_recordings,
                     (
@@ -158,6 +169,7 @@ class CollectorService:
                         AND own.volunteer_id = ?
                         AND own.status IN ('pending', 'approved')
                   )
+                  {exclusion_sql}
                   AND (
                       SELECT COUNT(*) FROM recordings r
                       WHERE r.text_id = t.id AND r.status IN ('pending', 'approved')
@@ -165,7 +177,7 @@ class CollectorService:
                 ORDER BY current_recordings ASC, t.id ASC
                 LIMIT 1
                 """,
-                (volunteer_id,),
+                parameters,
             ).fetchone()
         return dict(row) if row else None
 

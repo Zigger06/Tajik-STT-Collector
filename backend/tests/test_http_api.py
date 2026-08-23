@@ -78,6 +78,11 @@ class HttpApiTest(unittest.TestCase):
 
         task = self.request(f"/api/v1/tasks/recording?volunteer_id={volunteer_id}")
         self.assertEqual(task["task"]["content"], "Ин як матни санҷишӣ аст.")
+        excluded = self.request(
+            f"/api/v1/tasks/recording?volunteer_id={volunteer_id}"
+            f"&exclude_text_ids={task['task']['id']}"
+        )
+        self.assertIsNone(excluded["task"])
 
     def test_public_handler_hides_admin_routes(self) -> None:
         handler = make_handler(

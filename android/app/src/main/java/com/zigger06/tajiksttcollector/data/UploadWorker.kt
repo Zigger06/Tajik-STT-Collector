@@ -47,7 +47,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
                 UNIQUE_UPLOAD_WORK,
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request,
             )
         }
