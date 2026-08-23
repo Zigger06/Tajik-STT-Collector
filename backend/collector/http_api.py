@@ -56,7 +56,14 @@ def make_handler(
                 if parsed.path == "/api/v1/stats" and allow_admin:
                     self._send_json(service.stats())
                 elif parsed.path == "/api/v1/tasks/recording":
-                    task = service.get_recording_task(self._required_query(query, "volunteer_id"))
+                    excluded = query.get("exclude_text_ids", [""])[0]
+                    excluded_text_ids = [
+                        int(value) for value in excluded.split(",") if value.strip()
+                    ]
+                    task = service.get_recording_task(
+                        self._required_query(query, "volunteer_id"),
+                        excluded_text_ids,
+                    )
                     self._send_json({"task": task})
                 elif parsed.path == "/api/v1/volunteers/stats":
                     stats = service.volunteer_stats(

@@ -44,10 +44,17 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
-    suspend fun recordingTask(): TextTask? = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()
+    suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
+        withContext(Dispatchers.IO) {
+        val builder = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()
             .addQueryParameter("volunteer_id", settings.volunteerId)
-            .build()
+        if (excludeTextIds.isNotEmpty()) {
+            builder.addQueryParameter(
+                "exclude_text_ids",
+                excludeTextIds.distinct().take(100).joinToString(","),
+            )
+        }
+        val url = builder.build()
         parseTextTask(
             execute(Request.Builder().url(url).get().build()).optJSONObject("task"),
         )

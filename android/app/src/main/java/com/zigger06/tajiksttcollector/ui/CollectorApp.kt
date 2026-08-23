@@ -32,11 +32,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
@@ -62,6 +64,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -93,6 +96,7 @@ import com.zigger06.tajiksttcollector.data.AppSettings
 import com.zigger06.tajiksttcollector.data.AudioReviewTask
 import com.zigger06.tajiksttcollector.data.LocalStore
 import com.zigger06.tajiksttcollector.data.PendingRecording
+import com.zigger06.tajiksttcollector.data.RECORDING_BATCH_SIZE
 import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.data.VolunteerStats
@@ -108,7 +112,11 @@ private const val PRIVACY_URL = "https://zigger06.github.io/Tajik-STT-Collector/
 private const val TERMS_URL = "https://zigger06.github.io/Tajik-STT-Collector/terms.html"
 
 @Composable
-fun CollectorApp(store: LocalStore) {
+fun CollectorApp(
+    store: LocalStore,
+    darkTheme: Boolean,
+    onDarkThemeChange: (Boolean) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -150,13 +158,21 @@ fun CollectorApp(store: LocalStore) {
                 modifier = Modifier.padding(scaffoldPadding),
                 pendingCount = pendingCount,
                 volunteerStats = volunteerStats,
+                darkTheme = darkTheme,
+                onDarkThemeChange = onDarkThemeChange,
                 onRecord = { screen = Screen.RECORD },
                 onTextReview = { screen = Screen.TEXT_REVIEW },
                 onAudioReview = { screen = Screen.AUDIO_REVIEW },
                 onSettings = { screen = Screen.SETUP },
                 onRetryUpload = {
-                    UploadWorker.schedule(context)
-                    scope.launch { snackbar.showSnackbar("Фиристодан дар замина оғоз шуд.") }
+                    scope.launch {
+                        if (store.pendingRecordings().isEmpty()) {
+                            snackbar.showSnackbar("Аввал 5 сабтро пурра кунед.")
+                        } else {
+                            UploadWorker.schedule(context)
+                            snackbar.showSnackbar("Фиристодан дар замина оғоз шуд.")
+                        }
+                    }
                 },
             )
 
@@ -217,6 +233,8 @@ private fun HomeScreen(
     modifier: Modifier,
     pendingCount: Int,
     volunteerStats: VolunteerStats,
+    darkTheme: Boolean,
+    onDarkThemeChange: (Boolean) -> Unit,
     onRecord: () -> Unit,
     onTextReview: () -> Unit,
     onAudioReview: () -> Unit,
@@ -240,6 +258,16 @@ private fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Icon(
+                if (darkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(6.dp))
+            Switch(
+                checked = darkTheme,
+                onCheckedChange = onDarkThemeChange,
+            )
             IconButton(onClick = onSettings) {
                 Icon(Icons.Default.Settings, contentDescription = "Танзимот")
             }
@@ -398,7 +426,7 @@ private fun SetupScreen(
             value = displayName,
             onValueChange = { displayName = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Ном ё рамзи шумо") },
+            label = { Text("Ном") },
             supportingText = { Text("Барои махфият метавонед тахаллус истифода баред") },
             singleLine = true,
         )
@@ -406,7 +434,7 @@ private fun SetupScreen(
             value = region,
             onValueChange = { region = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Минтақа") },
+            label = { Text("Минтақа (ихтиёрӣ)") },
             singleLine = true,
         )
         OutlinedTextField(
@@ -478,14 +506,14 @@ private fun RecordingScreen(
     var result by remember { mutableStateOf<RecordingResult?>(null) }
     var recordingId by remember { mutableStateOf("") }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var sending by remember { mutableStateOf(false) }
+    var sessionCount by remember { mutableIntStateOf(store.stagedCount()) }
 
     fun loadTask() {
         scope.launch {
             loading = true
             error = ""
             try {
-                task = ApiClient(settings).recordingTask()
+                task = ApiClient(settings).recordingTask(store.pendingTextIds())
             } catch (exception: Exception) {
                 error = exception.message ?: "Матн гирифта нашуд."
             } finally {
@@ -534,6 +562,11 @@ private fun RecordingScreen(
                 Text(
                     "Матнро ором, равшан ва бе илова хонед.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Сабтҳои ин давр: $sessionCount аз $RECORDING_BATCH_SIZE",
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -624,37 +657,34 @@ private fun RecordingScreen(
                                 durationMs = recording.durationMs,
                                 sampleRate = recording.sampleRate,
                             )
-                            store.addPending(pending)
+                            val batchReady = store.addPending(pending)
+                            sessionCount = store.stagedCount()
                             onQueueChanged()
-                            sending = true
-                            scope.launch {
-                                try {
-                                    val api = ApiClient(settings)
-                                    api.registerVolunteer()
-                                    api.uploadRecording(pending)
-                                    store.removePending(pending.id)
-                                    recording.file.delete()
-                                    onQueueChanged()
-                                    showMessage("Сабт фиристода шуд. Раҳмат!")
-                                    result = null
-                                    task = null
-                                    loadTask()
-                                } catch (_: Exception) {
-                                    UploadWorker.schedule(context)
-                                    showMessage("Сабт дар телефон нигоҳ дошта шуд ва баъдтар фиристода мешавад.")
-                                    onBack()
-                                } finally {
-                                    sending = false
-                                }
+                            result = null
+                            task = null
+                            if (batchReady) {
+                                UploadWorker.schedule(context)
+                                showMessage("5 сабт барои санҷиш фиристода мешавад. Раҳмат!")
+                                onBack()
+                            } else {
+                                showMessage(
+                                    "Сабти $sessionCount аз $RECORDING_BATCH_SIZE нигоҳ дошта шуд.",
+                                )
+                                loadTask()
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = recording.durationMs >= 500 && !sending,
+                        enabled = recording.durationMs >= 500,
                     ) {
-                        if (sending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Save, contentDescription = null)
+                        Icon(Icons.Default.Save, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Нигоҳ доштан ва фиристодан")
+                        Text(
+                            if (sessionCount + 1 >= RECORDING_BATCH_SIZE) {
+                                "Нигоҳ доштан ва фиристодани 5 сабт"
+                            } else {
+                                "Нигоҳ доштан (${sessionCount + 1}/$RECORDING_BATCH_SIZE)"
+                            },
+                        )
                     }
                 }
             }
