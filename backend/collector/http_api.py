@@ -108,6 +108,14 @@ def make_handler(
                         consent=body.get("consent") is True,
                     )
                     self._send_json(result, HTTPStatus.CREATED)
+                elif parsed.path == "/api/v1/texts":
+                    body = self._read_json()
+                    result = service.submit_text(
+                        volunteer_id=body.get("volunteer_id", ""),
+                        content=body.get("text", ""),
+                        source=body.get("source", ""),
+                    )
+                    self._send_json(result, HTTPStatus.CREATED)
                 elif parsed.path == "/api/v1/recordings":
                     content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
                     if content_type not in ("audio/wav", "audio/x-wav", "application/octet-stream"):

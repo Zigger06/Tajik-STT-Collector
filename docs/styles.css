@@ -834,7 +834,7 @@ h1 em {
 
 .task-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 20px;
 }
 
@@ -1453,6 +1453,10 @@ h1 em {
 
   .task-card {
     padding: 26px;
+  }
+
+  .task-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .install-steps {

@@ -44,6 +44,15 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
+    suspend fun submitText(text: String, source: String = "") = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("volunteer_id", settings.volunteerId)
+            .put("text", text)
+            .put("source", source)
+        execute(jsonRequest("/api/v1/texts", body))
+        Unit
+    }
+
     suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
         withContext(Dispatchers.IO) {
         val builder = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()

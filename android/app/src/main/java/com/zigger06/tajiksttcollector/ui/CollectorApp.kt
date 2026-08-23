@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
@@ -106,7 +107,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
 
-private enum class Screen { HOME, SETUP, RECORD, TEXT_REVIEW, AUDIO_REVIEW }
+private enum class Screen { HOME, SETUP, RECORD, ADD_TEXT, TEXT_REVIEW, AUDIO_REVIEW }
 
 private const val PRIVACY_URL = "https://zigger06.github.io/Tajik-STT-Collector/privacy.html"
 private const val TERMS_URL = "https://zigger06.github.io/Tajik-STT-Collector/terms.html"
@@ -161,6 +162,7 @@ fun CollectorApp(
                 darkTheme = darkTheme,
                 onDarkThemeChange = onDarkThemeChange,
                 onRecord = { screen = Screen.RECORD },
+                onAddText = { screen = Screen.ADD_TEXT },
                 onTextReview = { screen = Screen.TEXT_REVIEW },
                 onAudioReview = { screen = Screen.AUDIO_REVIEW },
                 onSettings = { screen = Screen.SETUP },
@@ -211,6 +213,13 @@ fun CollectorApp(
                 showMessage = { scope.launch { snackbar.showSnackbar(it) } },
             )
 
+            Screen.ADD_TEXT -> AddTextScreen(
+                modifier = Modifier.padding(scaffoldPadding),
+                settings = settings,
+                onBack = { screen = Screen.HOME },
+                showMessage = { scope.launch { snackbar.showSnackbar(it) } },
+            )
+
             Screen.TEXT_REVIEW -> TextReviewScreen(
                 modifier = Modifier.padding(scaffoldPadding),
                 settings = settings,
@@ -236,6 +245,7 @@ private fun HomeScreen(
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
     onRecord: () -> Unit,
+    onAddText: () -> Unit,
     onTextReview: () -> Unit,
     onAudioReview: () -> Unit,
     onSettings: () -> Unit,
@@ -304,6 +314,12 @@ private fun HomeScreen(
             subtitle = "Матнро хонед ва овози худро сабт кунед",
             onClick = onRecord,
             emphasized = true,
+        )
+        ActionCard(
+            icon = Icons.Default.PostAdd,
+            title = "Иловаи матн",
+            subtitle = "Матни нави тоҷикиро барои санҷиш пешниҳод кунед",
+            onClick = onAddText,
         )
         ActionCard(
             icon = Icons.Default.FactCheck,
@@ -419,7 +435,7 @@ private fun SetupScreen(
     ScreenColumn(modifier) {
         ScreenHeader("Танзими аввал", onBack.takeIf { canGoBack })
         Text(
-            "Номи худро ворид кунед ва барои сабт, санҷиши матн ва санҷиши аудио саҳм гузоред.",
+            "Номи худро ворид кунед ва барои сабт, иловаи матн, санҷиши матн ва санҷиши аудио саҳм гузоред.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -688,6 +704,84 @@ private fun RecordingScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AddTextScreen(
+    modifier: Modifier,
+    settings: AppSettings,
+    onBack: () -> Unit,
+    showMessage: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var text by rememberSaveable { mutableStateOf("") }
+    var source by rememberSaveable { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+
+    ScreenColumn(modifier) {
+        ScreenHeader("Иловаи матн", onBack)
+        Text(
+            "Матни тоҷикиро ворид кунед. Он аввал ба санҷиши дигар ихтиёриён фиристода мешавад.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = text,
+            onValueChange = { if (it.length <= 1000) text = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Матн") },
+            supportingText = { Text("${text.length}/1000") },
+            minLines = 5,
+            maxLines = 12,
+        )
+        OutlinedTextField(
+            value = source,
+            onValueChange = { if (it.length <= 500) source = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Манбаъ (ихтиёрӣ)") },
+            supportingText = {
+                Text("Масалан: номи китоб, сомона ё матни шахсии шумо")
+            },
+            minLines = 2,
+            maxLines = 4,
+        )
+        Text(
+            "Матни дорои маълумоти шахсӣ ё матнеро, ки ҳаққи истифодаашро надоред, нафиристед.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (error.isNotBlank()) {
+            Text(error, color = MaterialTheme.colorScheme.error)
+        }
+        Button(
+            onClick = {
+                scope.launch {
+                    sending = true
+                    error = ""
+                    try {
+                        ApiClient(settings).submitText(text.trim(), source.trim())
+                        text = ""
+                        source = ""
+                        showMessage("Матн барои санҷиш фиристода шуд. Раҳмат!")
+                    } catch (exception: Exception) {
+                        error = exception.message ?: "Матн фиристода нашуд."
+                    } finally {
+                        sending = false
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = text.trim().length >= 3 && !sending,
+        ) {
+            if (sending) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Default.PostAdd, contentDescription = null)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("Фиристодан ба санҷиш")
         }
     }
 }

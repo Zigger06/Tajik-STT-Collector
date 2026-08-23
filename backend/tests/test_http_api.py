@@ -133,6 +133,29 @@ class HttpApiTest(unittest.TestCase):
             self.assertEqual(stats["submitted"], 0)
             self.assertEqual(stats["pending_review"], 0)
 
+            add_text = urllib.request.Request(
+                public_base + "/api/v1/texts",
+                data=json.dumps(
+                    {
+                        "volunteer_id": volunteer_id,
+                        "text": "Матни пешниҳодкардаи ихтиёрӣ.",
+                        "source": "",
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(add_text, timeout=3) as response:
+                submitted_text = json.loads(response.read())
+                self.assertEqual(response.status, 201)
+            self.assertEqual(submitted_text["status"], "pending_review")
+
+            with urllib.request.urlopen(
+                public_base + f"/api/v1/tasks/text-review?volunteer_id={volunteer_id}",
+                timeout=3,
+            ) as response:
+                self.assertIsNone(json.loads(response.read())["task"])
+
             self.service.import_texts([{"text": "Матн барои санҷиши ҷамъиятӣ."}])
             with urllib.request.urlopen(
                 public_base + f"/api/v1/tasks/text-review?volunteer_id={volunteer_id}",
