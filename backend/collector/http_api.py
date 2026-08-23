@@ -29,13 +29,6 @@ def make_handler(
     class CollectorRequestHandler(BaseHTTPRequestHandler):
         server_version = "TajikSTTCollector/0.1"
 
-        def do_OPTIONS(self) -> None:  # noqa: N802
-            self.send_response(HTTPStatus.NO_CONTENT)
-            self._cors_headers()
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Project-Key")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.end_headers()
-
         def do_GET(self) -> None:  # noqa: N802
             try:
                 parsed = urlparse(self.path)
@@ -71,7 +64,9 @@ def make_handler(
                     )
                     self._send_json(stats)
                 elif parsed.path == "/api/v1/tasks/text-review":
-                    task = service.get_text_review_task(self._required_query(query, "volunteer_id"))
+                    task = service.get_text_review_task(
+                        self._required_query(query, "volunteer_id")
+                    )
                     self._send_json({"task": task})
                 elif parsed.path == "/api/v1/tasks/audio-review":
                     volunteer_id = self._required_query(query, "volunteer_id")
@@ -228,9 +223,9 @@ def make_handler(
                 self._send_error(HTTPStatus.NOT_FOUND, "file not found")
                 return
             self.send_response(HTTPStatus.OK)
-            self._cors_headers()
             self.send_header(
-                "Content-Type", content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                "Content-Type",
+                content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             )
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
@@ -240,7 +235,6 @@ def make_handler(
         def _send_json(self, value: object, status: int = HTTPStatus.OK) -> None:
             data = json.dumps(value, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
-            self._cors_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -248,9 +242,6 @@ def make_handler(
 
         def _send_error(self, status: int, message: str) -> None:
             self._send_json({"error": message}, status)
-
-        def _cors_headers(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
 
         def log_message(self, format: str, *args) -> None:
             print(f"{self.client_address[0]} - {format % args}")
@@ -292,6 +283,9 @@ def serve_online(
     admin_file: str | Path,
 ) -> None:
     """Run a Funnel-facing API and a separate computer-only admin panel."""
+    if admin_host != "127.0.0.1":
+        raise ValueError("The online admin panel must bind to 127.0.0.1 only")
+
     public_handler = make_handler(
         service,
         "",
