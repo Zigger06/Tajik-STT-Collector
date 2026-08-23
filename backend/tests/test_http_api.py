@@ -11,7 +11,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from collector.database import Database
-from collector.http_api import make_handler
+from collector.http_api import make_handler, serve_online
 from collector.service import CollectorService
 
 
@@ -51,6 +51,7 @@ class HttpApiTest(unittest.TestCase):
     def test_health_auth_registration_import_and_task(self) -> None:
         with urllib.request.urlopen(self.base + "/health", timeout=3) as response:
             self.assertTrue(json.loads(response.read())["ok"])
+            self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
 
         with self.assertRaises(urllib.error.HTTPError) as unauthorized:
             urllib.request.urlopen(self.base + "/api/v1/stats", timeout=3)
@@ -84,7 +85,7 @@ class HttpApiTest(unittest.TestCase):
         )
         self.assertIsNone(excluded["task"])
 
-    def test_public_handler_hides_admin_routes(self) -> None:
+    def test_public_handler_hides_admin_routes_and_has_no_cors_wildcard(self) -> None:
         handler = make_handler(
             self.service,
             "client-key",
@@ -106,8 +107,23 @@ class HttpApiTest(unittest.TestCase):
                     urllib.request.urlopen(request, timeout=3)
                 self.assertEqual(missing.exception.code, 404)
 
+            for path in ("/api/v1/admin/texts/import", "/api/v1/admin/texts/resolve"):
+                request = urllib.request.Request(
+                    public_base + path,
+                    data=b"{}",
+                    method="POST",
+                    headers={
+                        "X-Project-Key": "client-key",
+                        "Content-Type": "application/json",
+                    },
+                )
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(request, timeout=3)
+                self.assertEqual(missing.exception.code, 404)
+
             with urllib.request.urlopen(public_base + "/health", timeout=3) as response:
                 self.assertTrue(json.loads(response.read())["ok"])
+                self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
 
             volunteer_id = str(uuid.uuid4())
             register = urllib.request.Request(
@@ -188,6 +204,18 @@ class HttpApiTest(unittest.TestCase):
             public_server.shutdown()
             public_server.server_close()
             public_thread.join(timeout=2)
+
+    def test_online_admin_rejects_external_bind(self) -> None:
+        with self.assertRaisesRegex(ValueError, "127.0.0.1"):
+            serve_online(
+                service=self.service,
+                public_host="127.0.0.1",
+                public_port=8000,
+                admin_host="0.0.0.0",
+                admin_port=8001,
+                admin_key="test-key",
+                admin_file=self.admin,
+            )
 
 
 if __name__ == "__main__":
