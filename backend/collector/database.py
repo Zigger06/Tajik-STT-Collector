@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS texts (
     content TEXT NOT NULL,
     normalized TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL DEFAULT '',
+    submitted_by TEXT REFERENCES volunteers(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'pending_review'
         CHECK (status IN ('pending_review', 'needs_admin', 'approved', 'rejected')),
     required_recordings INTEGER NOT NULL DEFAULT 5,
@@ -85,3 +86,8 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(texts)")
+            }
+            if "submitted_by" not in columns:
+                connection.execute("ALTER TABLE texts ADD COLUMN submitted_by TEXT")

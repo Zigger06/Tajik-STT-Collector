@@ -131,6 +131,38 @@ class CollectorServiceTest(unittest.TestCase):
         self.assertIsNotNone(second)
         self.assertNotEqual(second["id"], first["id"])
 
+    def test_volunteer_submits_text_for_other_people_to_review(self) -> None:
+        submitted = self.service.submit_text(
+            self.volunteers[0],
+            "Ин матнро ихтиёрӣ пешниҳод кардааст.",
+            source="",
+        )
+        self.assertEqual(submitted["status"], "pending_review")
+        self.assertEqual(submitted["source"], "")
+        self.assertIsNone(self.service.get_text_review_task(self.volunteers[0]))
+
+        task = self.service.get_text_review_task(self.volunteers[1])
+        self.assertEqual(task["id"], submitted["id"])
+        with self.assertRaises(ConflictError):
+            self.service.submit_text_review(
+                submitted["id"], self.volunteers[0], "correct"
+            )
+
+        first = self.service.submit_text_review(
+            submitted["id"], self.volunteers[1], "correct"
+        )
+        second = self.service.submit_text_review(
+            submitted["id"], self.volunteers[2], "correct"
+        )
+        self.assertEqual(first["status"], "pending_review")
+        self.assertEqual(second["status"], "approved")
+
+        with self.assertRaises(ConflictError):
+            self.service.submit_text(
+                self.volunteers[3],
+                "Ин матнро ихтиёрӣ пешниҳод кардааст.",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ X-Project-Key: <local-admin-key>
 |---|---|---|
 | GET | `/health` | Server readiness |
 | POST | `/api/v1/volunteers` | Register/update an anonymous volunteer |
+| POST | `/api/v1/texts` | Submit a volunteer text with an optional source for review |
 | GET | `/api/v1/volunteers/stats?volunteer_id=...` | Get personal recording counts |
 | GET | `/api/v1/tasks/recording?volunteer_id=...` | Get one approved text to record |
 | POST | `/api/v1/recordings?...` | Upload a raw `audio/wav` body |

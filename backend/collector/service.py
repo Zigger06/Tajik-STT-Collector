@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -85,6 +86,41 @@ class CollectorService:
                 (volunteer_id,),
             ).fetchone()
         return dict(row)
+
+    def submit_text(
+        self,
+        volunteer_id: str,
+        content: str,
+        source: str = "",
+    ) -> dict:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id)
+        content = normalize_text(content)
+        if len(content) < 3:
+            raise CollectorError("text is too short")
+        if len(content) > 1000:
+            raise CollectorError("text is too long")
+        source = normalize_text(source)[:500]
+
+        with self.database.connect() as connection:
+            try:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO texts
+                        (content, normalized, source, submitted_by, status, required_recordings)
+                    VALUES (?, ?, ?, ?, 'pending_review', 5)
+                    """,
+                    (content, content.casefold(), source, volunteer_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ConflictError("text already exists") from exc
+            text_id = cursor.lastrowid
+        return {
+            "id": text_id,
+            "content": content,
+            "source": source,
+            "status": "pending_review",
+        }
 
     def import_texts(
         self,
@@ -262,6 +298,7 @@ class CollectorService:
                 SELECT t.id, t.content, t.source
                 FROM texts t
                 WHERE t.status = 'pending_review'
+                  AND (t.submitted_by IS NULL OR t.submitted_by != ?)
                   AND NOT EXISTS (
                       SELECT 1 FROM text_reviews tr
                       WHERE tr.text_id = t.id AND tr.volunteer_id = ?
@@ -269,7 +306,7 @@ class CollectorService:
                 ORDER BY t.id ASC
                 LIMIT 1
                 """,
-                (volunteer_id,),
+                (volunteer_id, volunteer_id),
             ).fetchone()
         return dict(row) if row else None
 
@@ -290,12 +327,14 @@ class CollectorService:
 
         with self.database.connect() as connection:
             text = connection.execute(
-                "SELECT id, status FROM texts WHERE id = ?", (text_id,)
+                "SELECT id, status, submitted_by FROM texts WHERE id = ?", (text_id,)
             ).fetchone()
             if not text:
                 raise NotFoundError("text not found")
             if text["status"] != "pending_review":
                 raise ConflictError("text is no longer awaiting review")
+            if text["submitted_by"] == volunteer_id:
+                raise ConflictError("volunteer cannot review their own text")
             try:
                 connection.execute(
                     """
