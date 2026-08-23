@@ -462,6 +462,28 @@ class CollectorService:
                 result["recordings"][row["status"]] = row["count"]
         return result
 
+    def volunteer_stats(self, volunteer_id: str) -> dict:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id)
+        result = {
+            "submitted": 0,
+            "pending_review": 0,
+            "approved": 0,
+            "rejected": 0,
+        }
+        with self.database.connect() as connection:
+            for row in connection.execute(
+                "SELECT status, COUNT(*) AS count FROM recordings WHERE volunteer_id = ? GROUP BY status",
+                (volunteer_id,),
+            ):
+                count = int(row["count"])
+                result["submitted"] += count
+                if row["status"] == "pending":
+                    result["pending_review"] = count
+                elif row["status"] in result:
+                    result[row["status"]] = count
+        return result
+
     def export_dataset(self, output_dir: str | Path) -> dict:
         output = Path(output_dir).resolve()
         audio_output = output / "audio"

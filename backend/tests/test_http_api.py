@@ -103,6 +103,59 @@ class HttpApiTest(unittest.TestCase):
 
             with urllib.request.urlopen(public_base + "/health", timeout=3) as response:
                 self.assertTrue(json.loads(response.read())["ok"])
+
+            volunteer_id = str(uuid.uuid4())
+            register = urllib.request.Request(
+                public_base + "/api/v1/volunteers",
+                data=json.dumps(
+                    {
+                        "id": volunteer_id,
+                        "display_name": "Public volunteer",
+                        "consent": True,
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(register, timeout=3) as response:
+                self.assertEqual(response.status, 201)
+
+            with urllib.request.urlopen(
+                public_base + f"/api/v1/volunteers/stats?volunteer_id={volunteer_id}",
+                timeout=3,
+            ) as response:
+                stats = json.loads(response.read())
+            self.assertEqual(stats["submitted"], 0)
+            self.assertEqual(stats["pending_review"], 0)
+
+            self.service.import_texts([{"text": "Матн барои санҷиши ҷамъиятӣ."}])
+            with urllib.request.urlopen(
+                public_base + f"/api/v1/tasks/text-review?volunteer_id={volunteer_id}",
+                timeout=3,
+            ) as response:
+                review_task = json.loads(response.read())["task"]
+            self.assertEqual(review_task["content"], "Матн барои санҷиши ҷамъиятӣ.")
+
+            review = urllib.request.Request(
+                public_base + "/api/v1/text-reviews",
+                data=json.dumps(
+                    {
+                        "text_id": review_task["id"],
+                        "volunteer_id": volunteer_id,
+                        "verdict": "correct",
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(review, timeout=3) as response:
+                self.assertEqual(response.status, 201)
+
+            with urllib.request.urlopen(
+                public_base + f"/api/v1/tasks/audio-review?volunteer_id={volunteer_id}",
+                timeout=3,
+            ) as response:
+                self.assertIsNone(json.loads(response.read())["task"])
         finally:
             public_server.shutdown()
             public_server.server_close()

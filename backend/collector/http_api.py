@@ -58,6 +58,11 @@ def make_handler(
                 elif parsed.path == "/api/v1/tasks/recording":
                     task = service.get_recording_task(self._required_query(query, "volunteer_id"))
                     self._send_json({"task": task})
+                elif parsed.path == "/api/v1/volunteers/stats":
+                    stats = service.volunteer_stats(
+                        self._required_query(query, "volunteer_id")
+                    )
+                    self._send_json(stats)
                 elif parsed.path == "/api/v1/tasks/text-review":
                     task = service.get_text_review_task(self._required_query(query, "volunteer_id"))
                     self._send_json({"task": task})
@@ -164,6 +169,8 @@ def make_handler(
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
         def _is_authorized(self, parsed) -> bool:
+            if not allow_admin:
+                return True
             supplied = self.headers.get("X-Project-Key", "")
             return bool(api_key) and supplied == api_key
 
@@ -264,7 +271,6 @@ def serve_online(
     service: CollectorService,
     public_host: str,
     public_port: int,
-    client_key: str,
     admin_host: str,
     admin_port: int,
     admin_key: str,
@@ -273,7 +279,7 @@ def serve_online(
     """Run a Funnel-facing API and a separate computer-only admin panel."""
     public_handler = make_handler(
         service,
-        client_key,
+        "",
         admin_file,
         allow_admin=False,
     )
