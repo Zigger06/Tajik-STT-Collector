@@ -2,10 +2,8 @@
 setlocal
 cd /d "%~dp0"
 
-where py >nul 2>nul
+call "%~dp0find_python.bat"
 if errorlevel 1 (
-  echo Python 3 is not installed or the py launcher is unavailable.
-  echo Install Python 3, then run this file again.
   pause
   exit /b 1
 )
@@ -35,5 +33,5 @@ echo.
 echo The admin panel will be available ONLY on this PC:
 echo http://127.0.0.1:8001/admin
 echo.
-py -3 server.py online --public-host 127.0.0.1 --public-port 8000 --admin-host 127.0.0.1 --admin-port 8001
+%TAJIK_PYTHON_CMD% server.py online --public-host 127.0.0.1 --public-port 8000 --admin-host 127.0.0.1 --admin-port 8001
 pause
