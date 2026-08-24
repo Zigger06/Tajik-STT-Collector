@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS volunteers (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS device_credentials (
+    volunteer_id TEXT PRIMARY KEY REFERENCES volunteers(id) ON DELETE CASCADE,
+    secret_salt TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS texts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL,
