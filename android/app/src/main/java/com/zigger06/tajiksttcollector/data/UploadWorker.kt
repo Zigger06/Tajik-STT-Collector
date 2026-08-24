@@ -29,7 +29,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             store.saveSubmittedCount(api.volunteerStats().submitted)
             Result.success()
         } catch (error: ApiException) {
-            if (error.statusCode >= 500) Result.retry() else Result.failure()
+            if (error.statusCode == 429 || error.statusCode >= 500) Result.retry() else Result.failure()
         } catch (error: IOException) {
             Result.retry()
         }

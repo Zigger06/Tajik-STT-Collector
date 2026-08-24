@@ -2,6 +2,7 @@ package com.zigger06.tajiksttcollector.data
 
 data class AppSettings(
     val volunteerId: String,
+    val deviceSecret: String,
     val displayName: String,
     val region: String,
     val dialect: String,
@@ -9,9 +10,17 @@ data class AppSettings(
     val consent: Boolean,
 ) {
     val isConfigured: Boolean
-        get() = displayName.isNotBlank() &&
+        get() = volunteerId.isNotBlank() &&
+            deviceSecret.isNotBlank() &&
+            displayName.isNotBlank() &&
             serverUrl.isNotBlank() &&
             consent
+
+    // Do not let accidental logging of this data class expose the bearer token.
+    override fun toString(): String =
+        "AppSettings(volunteerId=$volunteerId, deviceSecret=<redacted>, " +
+            "displayName=$displayName, region=$region, dialect=$dialect, " +
+            "serverUrl=$serverUrl, consent=$consent)"
 }
 
 data class TextTask(
