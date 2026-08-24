@@ -284,7 +284,12 @@ class DeviceSecurity:
         return result
 
     def authenticate(self, volunteer_id: str, secret: str, category: str, ip: str) -> str:
-        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        if not volunteer_id or not secret:
+            raise AuthenticationError("device credential is missing or invalid")
+        try:
+            volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        except CollectorError as exc:
+            raise AuthenticationError("device credential is missing or invalid") from exc
         secret = self.validate_secret(secret)
         with self.service.database.connect() as connection:
             row = connection.execute(
