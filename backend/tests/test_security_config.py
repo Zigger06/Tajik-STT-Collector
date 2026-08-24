@@ -84,6 +84,19 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         self.assertIn('preferences.getString("device_secret", null)', local_store)
         self.assertIn("DeviceCredential.generateSecret()", local_store)
 
+    def test_backend_does_not_take_volunteer_identity_from_query_or_json(self) -> None:
+        http_api = (ROOT / "backend/collector/http_api.py").read_text(encoding="utf-8")
+        security = (ROOT / "backend/collector/security.py").read_text(encoding="utf-8")
+
+        self.assertIn("_authenticated_volunteer", http_api)
+        self.assertIn('self.headers.get("X-Volunteer-Id", "")', http_api)
+        self.assertIn("_bearer_secret()", http_api)
+        self.assertNotIn('self._required_query(query, "volunteer_id")', http_api)
+        self.assertNotIn('body.get("volunteer_id"', http_api)
+        self.assertIn("device_credentials", security)
+        self.assertIn("secret_hash", security)
+        self.assertNotIn("INSERT INTO device_credentials (volunteer_id, device_secret", security)
+
 
 if __name__ == "__main__":
     unittest.main()
