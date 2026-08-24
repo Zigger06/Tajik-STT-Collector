@@ -7,15 +7,16 @@ import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.VolunteerStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class ApiException(val statusCode: Int, message: String) : IOException(message)
@@ -40,13 +41,24 @@ class ApiClient(private val settings: AppSettings) {
             .put("region", settings.region)
             .put("dialect", settings.dialect)
             .put("consent", settings.consent)
-        execute(jsonRequest("/api/v1/volunteers", body))
+
+        try {
+            execute(registrationRequest(body))
+        } catch (error: ApiException) {
+            if (error.statusCode != 428) throw error
+            val challenge = registrationChallenge()
+            val nonce = challenge.getString("nonce")
+            val difficulty = challenge.getInt("difficulty")
+            val proof = withContext(Dispatchers.Default) {
+                solveRegistrationProof(nonce, difficulty)
+            }
+            execute(registrationRequest(body, nonce, proof.toString()))
+        }
         Unit
     }
 
     suspend fun submitText(text: String, source: String = "") = withContext(Dispatchers.IO) {
         val body = JSONObject()
-            .put("volunteer_id", settings.volunteerId)
             .put("text", text)
             .put("source", source)
         execute(jsonRequest("/api/v1/texts", body))
@@ -55,25 +67,23 @@ class ApiClient(private val settings: AppSettings) {
 
     suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
         withContext(Dispatchers.IO) {
-        val builder = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()
-            .addQueryParameter("volunteer_id", settings.volunteerId)
-        if (excludeTextIds.isNotEmpty()) {
-            builder.addQueryParameter(
-                "exclude_text_ids",
-                excludeTextIds.distinct().take(100).joinToString(","),
+            val builder = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()
+            if (excludeTextIds.isNotEmpty()) {
+                builder.addQueryParameter(
+                    "exclude_text_ids",
+                    excludeTextIds.distinct().take(100).joinToString(","),
+                )
+            }
+            parseTextTask(
+                execute(authorizedBuilder(builder.build().toString()).get().build())
+                    .optJSONObject("task"),
             )
         }
-        val url = builder.build()
-        parseTextTask(
-            execute(Request.Builder().url(url).get().build()).optJSONObject("task"),
-        )
-    }
 
     suspend fun volunteerStats(): VolunteerStats = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/api/v1/volunteers/stats".toHttpUrl().newBuilder()
-            .addQueryParameter("volunteer_id", settings.volunteerId)
-            .build()
-        val stats = execute(Request.Builder().url(url).get().build())
+        val stats = execute(
+            authorizedBuilder("$baseUrl/api/v1/volunteers/stats").get().build(),
+        )
         VolunteerStats(
             submitted = stats.optInt("submitted", 0),
             pendingReview = stats.optInt("pending_review", 0),
@@ -83,20 +93,16 @@ class ApiClient(private val settings: AppSettings) {
     }
 
     suspend fun textReviewTask(): TextTask? = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/api/v1/tasks/text-review".toHttpUrl().newBuilder()
-            .addQueryParameter("volunteer_id", settings.volunteerId)
-            .build()
         parseTextTask(
-            execute(Request.Builder().url(url).get().build()).optJSONObject("task"),
+            execute(authorizedBuilder("$baseUrl/api/v1/tasks/text-review").get().build())
+                .optJSONObject("task"),
         )
     }
 
     suspend fun audioReviewTask(): AudioReviewTask? = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/api/v1/tasks/audio-review".toHttpUrl().newBuilder()
-            .addQueryParameter("volunteer_id", settings.volunteerId)
-            .build()
-        val task = execute(Request.Builder().url(url).get().build()).optJSONObject("task")
-            ?: return@withContext null
+        val task = execute(
+            authorizedBuilder("$baseUrl/api/v1/tasks/audio-review").get().build(),
+        ).optJSONObject("task") ?: return@withContext null
         val audioUrl = task.getString("audio_url")
         AudioReviewTask(
             id = task.getString("id"),
@@ -117,12 +123,10 @@ class ApiClient(private val settings: AppSettings) {
         val url = "$baseUrl/api/v1/recordings".toHttpUrl().newBuilder()
             .addQueryParameter("recording_id", recording.id)
             .addQueryParameter("text_id", recording.textId.toString())
-            .addQueryParameter("volunteer_id", settings.volunteerId)
             .addQueryParameter("duration_ms", recording.durationMs.toString())
             .addQueryParameter("sample_rate", recording.sampleRate.toString())
             .build()
-        val request = Request.Builder()
-            .url(url)
+        val request = authorizedBuilder(url.toString())
             .post(file.asRequestBody("audio/wav".toMediaType()))
             .build()
         execute(request)
@@ -133,7 +137,6 @@ class ApiClient(private val settings: AppSettings) {
         withContext(Dispatchers.IO) {
             val body = JSONObject()
                 .put("text_id", textId)
-                .put("volunteer_id", settings.volunteerId)
                 .put("verdict", verdict)
                 .put("correction", correction)
             execute(jsonRequest("/api/v1/text-reviews", body))
@@ -144,19 +147,40 @@ class ApiClient(private val settings: AppSettings) {
         withContext(Dispatchers.IO) {
             val body = JSONObject()
                 .put("recording_id", recordingId)
-                .put("volunteer_id", settings.volunteerId)
                 .put("verdict", verdict)
                 .put("reason", reason)
             execute(jsonRequest("/api/v1/audio-reviews", body))
             Unit
         }
 
-    private fun jsonRequest(path: String, body: JSONObject): Request {
-        val request = Request.Builder()
-            .url("$baseUrl$path")
+    private fun registrationRequest(
+        body: JSONObject,
+        nonce: String = "",
+        proof: String = "",
+    ): Request {
+        val builder = authorizedBuilder("$baseUrl/api/v1/volunteers")
             .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return request.build()
+        if (nonce.isNotBlank()) builder.header("X-Registration-Nonce", nonce)
+        if (proof.isNotBlank()) builder.header("X-Registration-Proof", proof)
+        return builder.build()
     }
+
+    private fun registrationChallenge(): JSONObject {
+        val request = authorizedBuilder("$baseUrl/api/v1/registration-challenge")
+            .get()
+            .build()
+        return execute(request)
+    }
+
+    private fun jsonRequest(path: String, body: JSONObject): Request =
+        authorizedBuilder("$baseUrl$path")
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+
+    private fun authorizedBuilder(url: String): Request.Builder = Request.Builder()
+        .url(url)
+        .header("X-Volunteer-Id", settings.volunteerId)
+        .header("Authorization", "Bearer ${settings.deviceSecret}")
 
     private fun execute(request: Request): JSONObject {
         client.newCall(request).execute().use { response ->
@@ -182,5 +206,28 @@ class ApiClient(private val settings: AppSettings) {
             currentRecordings = task.optInt("current_recordings", 0),
             requiredRecordings = task.optInt("required_recordings", 5),
         )
+    }
+
+    private fun solveRegistrationProof(nonce: String, difficulty: Int): Long {
+        require(difficulty in 1..24) { "Invalid registration challenge" }
+        val digest = MessageDigest.getInstance("SHA-256")
+        var counter = 0L
+        while (counter >= 0) {
+            val hash = digest.digest("$nonce:$counter".toByteArray(Charsets.UTF_8))
+            if (hasLeadingZeroBits(hash, difficulty)) return counter
+            counter++
+        }
+        throw IOException("Registration proof could not be generated")
+    }
+
+    private fun hasLeadingZeroBits(digest: ByteArray, bits: Int): Boolean {
+        val wholeBytes = bits / 8
+        val remainingBits = bits % 8
+        for (index in 0 until wholeBytes) {
+            if (digest[index].toInt() and 0xff != 0) return false
+        }
+        if (remainingBits == 0) return true
+        val mask = (0xff shl (8 - remainingBits)) and 0xff
+        return (digest[wholeBytes].toInt() and 0xff and mask) == 0
     }
 }
