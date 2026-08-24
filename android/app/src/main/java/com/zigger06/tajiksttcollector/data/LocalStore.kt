@@ -14,12 +14,23 @@ class LocalStore(context: Context) {
     private val database = PendingDatabase(appContext)
 
     fun loadSettings(): AppSettings {
+        // Keep the pre-auth volunteer UUID during upgrades so existing server
+        // history and the local five-recording queue remain attached to it.
         val volunteerId = preferences.getString("volunteer_id", null)
             ?: UUID.randomUUID().toString().also {
                 preferences.edit().putString("volunteer_id", it).apply()
             }
+        // Existing installs did not have this value. Generate it once on first
+        // launch after upgrade and keep it in app-private SharedPreferences.
+        // android:allowBackup=false prevents normal Android backup export.
+        val deviceSecret = preferences.getString("device_secret", null)
+            ?.takeIf { it.isNotBlank() }
+            ?: DeviceCredential.generateSecret().also {
+                preferences.edit().putString("device_secret", it).apply()
+            }
         return AppSettings(
             volunteerId = volunteerId,
+            deviceSecret = deviceSecret,
             displayName = preferences.getString("display_name", "") ?: "",
             region = preferences.getString("region", "") ?: "",
             dialect = preferences.getString("dialect", "") ?: "",
@@ -31,6 +42,7 @@ class LocalStore(context: Context) {
     fun saveSettings(settings: AppSettings) {
         preferences.edit()
             .putString("volunteer_id", settings.volunteerId)
+            // device_secret is deliberately not rewritten from UI settings.
             .putString("display_name", settings.displayName.trim())
             .putString("region", settings.region.trim())
             .putString("dialect", settings.dialect.trim())
