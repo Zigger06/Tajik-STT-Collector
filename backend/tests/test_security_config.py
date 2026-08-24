@@ -67,6 +67,23 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         self.assertTrue(config["server_url"].startswith("https://"))
         self.assertNotIn("tajik-stt-local", json.dumps(config))
 
+    def test_android_uses_bearer_credential_not_volunteer_id_in_urls_or_bodies(self) -> None:
+        api = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/network/ApiClient.kt"
+        ).read_text(encoding="utf-8")
+        local_store = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/data/LocalStore.kt"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('header("Authorization", "Bearer ${settings.deviceSecret}")', api)
+        self.assertIn('header("X-Volunteer-Id", settings.volunteerId)', api)
+        self.assertNotIn('addQueryParameter("volunteer_id"', api)
+        self.assertNotIn('.put("volunteer_id"', api)
+        self.assertIn('preferences.getString("device_secret", null)', local_store)
+        self.assertIn("DeviceCredential.generateSecret()", local_store)
+
 
 if __name__ == "__main__":
     unittest.main()
