@@ -73,8 +73,10 @@ class CollectorServiceTest(unittest.TestCase):
 
         audio_task = self.service.get_audio_review_task(self.volunteers[1])
         self.assertEqual(audio_task["id"], recording_id)
-        self.assertEqual(audio_task["audio_url"], f"/media/{recording_id}.wav")
-        self.assertNotIn("key", audio_task["audio_url"])
+        # HTTP is responsible for creating the opaque reviewer capability;
+        # the service-layer task must not expose a reusable media URL itself.
+        self.assertNotIn("audio_url", audio_task)
+        self.assertNotIn("volunteer_id", audio_task)
 
         with self.assertRaises(ConflictError):
             self.service.submit_audio_review(
