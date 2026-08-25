@@ -7,7 +7,14 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from .service import CollectorError, CollectorService, ConflictError, normalize_text, validate_uuid
+from .service import (
+    CollectorError,
+    CollectorService,
+    ConflictError,
+    ForbiddenError,
+    normalize_text,
+    validate_uuid,
+)
 
 
 class AuthenticationError(CollectorError):
@@ -48,6 +55,10 @@ DEFAULT_RATE_RULES: dict[str, dict[str, tuple[RateRule, ...]]] = {
         "ip": (RateRule(2500, 600),),
     },
     "stats": {
+        "device": (RateRule(120, 600),),
+        "ip": (RateRule(2000, 600),),
+    },
+    "data": {
         "device": (RateRule(120, 600),),
         "ip": (RateRule(2000, 600),),
     },
@@ -226,7 +237,8 @@ class DeviceSecurity:
 
         with self.service.database.connect() as connection:
             volunteer = connection.execute(
-                "SELECT id, display_name FROM volunteers WHERE id = ?", (volunteer_id,)
+                "SELECT id, display_name, consent_active FROM volunteers WHERE id = ?",
+                (volunteer_id,),
             ).fetchone()
             credential = connection.execute(
                 "SELECT secret_salt, secret_hash FROM device_credentials WHERE volunteer_id = ?",
@@ -235,6 +247,10 @@ class DeviceSecurity:
 
         if credential:
             self._verify_row(secret, credential)
+            if volunteer and not volunteer["consent_active"]:
+                # Repeated background registration must never silently undo a
+                # user's explicit withdrawal. Re-consent needs a future explicit flow.
+                raise ForbiddenError("volunteer consent has been revoked")
         else:
             # New installs and one-time migration of pre-auth installs both need
             # proof-of-work. This creates Sybil friction without asking the user
@@ -248,6 +264,8 @@ class DeviceSecurity:
                 new_name = normalize_text(display_name).casefold()
                 if old_name != new_name:
                     raise ConflictError("legacy volunteer profile does not match this device")
+                if not volunteer["consent_active"]:
+                    raise ForbiddenError("volunteer consent has been revoked")
 
         result = self.service.register_volunteer(
             volunteer_id=volunteer_id,
@@ -283,7 +301,15 @@ class DeviceSecurity:
                         raise ConflictError("volunteer credential was initialized elsewhere") from exc
         return result
 
-    def authenticate(self, volunteer_id: str, secret: str, category: str, ip: str) -> str:
+    def authenticate(
+        self,
+        volunteer_id: str,
+        secret: str,
+        category: str,
+        ip: str,
+        *,
+        allow_revoked: bool = False,
+    ) -> str:
         if not volunteer_id or not secret:
             raise AuthenticationError("device credential is missing or invalid")
         try:
@@ -293,13 +319,20 @@ class DeviceSecurity:
         secret = self.validate_secret(secret)
         with self.service.database.connect() as connection:
             row = connection.execute(
-                "SELECT secret_salt, secret_hash FROM device_credentials WHERE volunteer_id = ?",
+                """
+                SELECT dc.secret_salt, dc.secret_hash, v.consent_active
+                FROM device_credentials dc
+                JOIN volunteers v ON v.id = dc.volunteer_id
+                WHERE dc.volunteer_id = ?
+                """,
                 (volunteer_id,),
             ).fetchone()
         if not row:
             raise AuthenticationError("device credential is not registered")
         self._verify_row(secret, row)
         self.rate_limiter.check(category, self.device_key(volunteer_id, secret), ip)
+        if not allow_revoked and not row["consent_active"]:
+            raise ForbiddenError("volunteer consent has been revoked")
         return volunteer_id
 
     def _verify_row(self, secret: str, row) -> None:

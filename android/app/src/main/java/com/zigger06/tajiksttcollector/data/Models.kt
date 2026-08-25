@@ -8,6 +8,7 @@ data class AppSettings(
     val dialect: String,
     val serverUrl: String,
     val consent: Boolean,
+    val participationRevoked: Boolean = false,
 ) {
     val isConfigured: Boolean
         get() = volunteerId.isNotBlank() &&
@@ -16,11 +17,15 @@ data class AppSettings(
             serverUrl.isNotBlank() &&
             consent
 
+    val canContribute: Boolean
+        get() = isConfigured && !participationRevoked
+
     // Do not let accidental logging of this data class expose the bearer token.
     override fun toString(): String =
         "AppSettings(volunteerId=$volunteerId, deviceSecret=<redacted>, " +
             "displayName=$displayName, region=$region, dialect=$dialect, " +
-            "serverUrl=$serverUrl, consent=$consent)"
+            "serverUrl=$serverUrl, consent=$consent, " +
+            "participationRevoked=$participationRevoked)"
 }
 
 data class TextTask(
@@ -44,6 +49,20 @@ data class AudioReviewTask(
     val audioUrl: String,
     val durationMs: Long,
     val sampleRate: Int,
+)
+
+data class OwnRecording(
+    val id: String,
+    val status: String,
+    val createdAt: String,
+    val text: String,
+    val durationMs: Long,
+    val sampleRate: Int,
+)
+
+data class MyDataSnapshot(
+    val recordings: List<OwnRecording>,
+    val consentActive: Boolean,
 )
 
 data class PendingRecording(

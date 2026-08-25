@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS volunteers (
     region TEXT NOT NULL DEFAULT '',
     dialect TEXT NOT NULL DEFAULT '',
     consent_version TEXT NOT NULL DEFAULT 'v1',
+    consent_active INTEGER NOT NULL DEFAULT 1 CHECK (consent_active IN (0, 1)),
+    revoked_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -93,8 +95,19 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            columns = {
+
+            text_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(texts)")
             }
-            if "submitted_by" not in columns:
+            if "submitted_by" not in text_columns:
                 connection.execute("ALTER TABLE texts ADD COLUMN submitted_by TEXT")
+
+            volunteer_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(volunteers)")
+            }
+            if "consent_active" not in volunteer_columns:
+                connection.execute(
+                    "ALTER TABLE volunteers ADD COLUMN consent_active INTEGER NOT NULL DEFAULT 1"
+                )
+            if "revoked_at" not in volunteer_columns:
+                connection.execute("ALTER TABLE volunteers ADD COLUMN revoked_at TEXT")

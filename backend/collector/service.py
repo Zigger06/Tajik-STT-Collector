@@ -21,6 +21,10 @@ class NotFoundError(CollectorError):
     status_code = 404
 
 
+class ForbiddenError(CollectorError):
+    status_code = 403
+
+
 class ConflictError(CollectorError):
     status_code = 409
 
@@ -48,6 +52,7 @@ class CollectorService:
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.required_reviews = required_reviews
         self.database.initialize()
+        self._purge_delete_tombstones()
 
     def register_volunteer(
         self,
@@ -67,8 +72,8 @@ class CollectorService:
         with self.database.connect() as connection:
             connection.execute(
                 """
-                INSERT INTO volunteers (id, display_name, region, dialect)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO volunteers (id, display_name, region, dialect, consent_active)
+                VALUES (?, ?, ?, ?, 1)
                 ON CONFLICT(id) DO UPDATE SET
                     display_name = excluded.display_name,
                     region = excluded.region,
@@ -82,7 +87,10 @@ class CollectorService:
                 ),
             )
             row = connection.execute(
-                "SELECT id, display_name, region, dialect, created_at FROM volunteers WHERE id = ?",
+                """
+                SELECT id, display_name, region, dialect, consent_active, revoked_at, created_at
+                FROM volunteers WHERE id = ?
+                """,
                 (volunteer_id,),
             ).fetchone()
         return dict(row)
@@ -194,8 +202,12 @@ class CollectorService:
                 SELECT
                     t.id, t.content, t.source, t.required_recordings,
                     (
-                        SELECT COUNT(*) FROM recordings r
-                        WHERE r.text_id = t.id AND r.status IN ('pending', 'approved')
+                        SELECT COUNT(*)
+                        FROM recordings r
+                        JOIN volunteers rv ON rv.id = r.volunteer_id
+                        WHERE r.text_id = t.id
+                          AND r.status IN ('pending', 'approved')
+                          AND rv.consent_active = 1
                     ) AS current_recordings
                 FROM texts t
                 WHERE t.status = 'approved'
@@ -207,8 +219,12 @@ class CollectorService:
                   )
                   {exclusion_sql}
                   AND (
-                      SELECT COUNT(*) FROM recordings r
-                      WHERE r.text_id = t.id AND r.status IN ('pending', 'approved')
+                      SELECT COUNT(*)
+                      FROM recordings r
+                      JOIN volunteers rv ON rv.id = r.volunteer_id
+                      WHERE r.text_id = t.id
+                        AND r.status IN ('pending', 'approved')
+                        AND rv.consent_active = 1
                   ) < t.required_recordings
                 ORDER BY current_recordings ASC, t.id ASC
                 LIMIT 1
@@ -378,7 +394,9 @@ class CollectorService:
                 SELECT r.id, r.duration_ms, r.sample_rate, t.content AS text
                 FROM recordings r
                 JOIN texts t ON t.id = r.text_id
+                JOIN volunteers owner ON owner.id = r.volunteer_id
                 WHERE r.status = 'pending'
+                  AND owner.consent_active = 1
                   AND r.volunteer_id <> ?
                   AND NOT EXISTS (
                       SELECT 1 FROM audio_reviews ar
@@ -391,12 +409,7 @@ class CollectorService:
             ).fetchone()
         if not row:
             return None
-        result = dict(row)
-        # Keep the access key out of URLs: query strings can be copied or logged.
-        # Android resolves this relative path against its configured HTTPS server
-        # and sends X-Project-Key as a request header when playing the audio.
-        result["audio_url"] = f"/media/{row['id']}.wav"
-        return result
+        return dict(row)
 
     def submit_audio_review(
         self,
@@ -413,11 +426,18 @@ class CollectorService:
 
         with self.database.connect() as connection:
             recording = connection.execute(
-                "SELECT id, volunteer_id, status FROM recordings WHERE id = ?",
+                """
+                SELECT r.id, r.volunteer_id, r.status, owner.consent_active
+                FROM recordings r
+                JOIN volunteers owner ON owner.id = r.volunteer_id
+                WHERE r.id = ?
+                """,
                 (recording_id,),
             ).fetchone()
             if not recording:
                 raise NotFoundError("recording not found")
+            if not recording["consent_active"]:
+                raise ConflictError("recording owner has withdrawn consent")
             if recording["volunteer_id"] == volunteer_id:
                 raise ConflictError("volunteer cannot review their own recording")
             if recording["status"] != "pending":
@@ -535,6 +555,80 @@ class CollectorService:
                     result[row["status"]] = count
         return result
 
+    def list_volunteer_recordings(self, volunteer_id: str) -> list[dict]:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id, require_active=False)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.id, r.status, r.created_at, r.duration_ms, r.sample_rate,
+                       t.id AS text_id, t.content AS text
+                FROM recordings r
+                JOIN texts t ON t.id = r.text_id
+                WHERE r.volunteer_id = ?
+                ORDER BY r.created_at DESC, r.id DESC
+                """,
+                (volunteer_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def volunteer_recording_path(self, volunteer_id: str, recording_id: str) -> Path:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        recording_id = validate_uuid(recording_id, "recording_id")
+        self._require_volunteer(volunteer_id, require_active=False)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT file_path FROM recordings WHERE id = ? AND volunteer_id = ?",
+                (recording_id, volunteer_id),
+            ).fetchone()
+        if not row:
+            # Deliberately do not reveal whether another volunteer owns this UUID.
+            raise NotFoundError("recording not found")
+        path = self._managed_audio_path(row["file_path"])
+        if not path.exists():
+            raise NotFoundError("audio file is missing")
+        return path
+
+    def delete_volunteer_recording(self, volunteer_id: str, recording_id: str) -> dict:
+        recording_id = validate_uuid(recording_id, "recording_id")
+        deleted = self._delete_volunteer_recordings(volunteer_id, recording_id)
+        return {"recording_id": recording_id, "deleted": deleted == 1}
+
+    def delete_all_volunteer_recordings(self, volunteer_id: str) -> dict:
+        deleted = self._delete_volunteer_recordings(volunteer_id, None)
+        return {"deleted": deleted}
+
+    def revoke_consent(self, volunteer_id: str) -> dict:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id, require_active=False)
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE volunteers
+                SET consent_active = 0,
+                    revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                WHERE id = ?
+                """,
+                (volunteer_id,),
+            )
+            row = connection.execute(
+                "SELECT consent_active, revoked_at FROM volunteers WHERE id = ?",
+                (volunteer_id,),
+            ).fetchone()
+        return {
+            "consent_active": bool(row["consent_active"]),
+            "revoked_at": row["revoked_at"],
+        }
+
+    def volunteer_consent_active(self, volunteer_id: str) -> bool:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id, require_active=False)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT consent_active FROM volunteers WHERE id = ?", (volunteer_id,)
+            ).fetchone()
+        return bool(row["consent_active"])
+
     def export_dataset(self, output_dir: str | Path) -> dict:
         output = Path(output_dir).resolve()
         audio_output = output / "audio"
@@ -550,7 +644,10 @@ class CollectorService:
                        r.volunteer_id, t.id AS text_id, t.content, t.source
                 FROM recordings r
                 JOIN texts t ON t.id = r.text_id
-                WHERE r.status = 'approved' AND t.status = 'approved'
+                JOIN volunteers v ON v.id = r.volunteer_id
+                WHERE r.status = 'approved'
+                  AND t.status = 'approved'
+                  AND v.consent_active = 1
                 ORDER BY t.id, r.created_at
                 """
             ).fetchall()
@@ -584,15 +681,97 @@ class CollectorService:
             ).fetchone()
         if not row:
             raise NotFoundError("recording not found")
-        path = Path(row["file_path"])
+        path = self._managed_audio_path(row["file_path"])
         if not path.exists():
             raise NotFoundError("audio file is missing")
         return path
 
-    def _require_volunteer(self, volunteer_id: str) -> None:
+    def _delete_volunteer_recordings(
+        self,
+        volunteer_id: str,
+        recording_id: str | None,
+    ) -> int:
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id, require_active=False)
+        with self.database.connect() as connection:
+            if recording_id is None:
+                rows = connection.execute(
+                    "SELECT id, file_path FROM recordings WHERE volunteer_id = ?",
+                    (volunteer_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT id, file_path FROM recordings WHERE volunteer_id = ? AND id = ?",
+                    (volunteer_id, recording_id),
+                ).fetchall()
+        if recording_id is not None and not rows:
+            raise NotFoundError("recording not found")
+
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for row in rows:
+                original = self._managed_audio_path(row["file_path"])
+                if not original.exists():
+                    continue
+                tombstone = self.audio_dir / f".delete-{uuid.uuid4().hex}-{original.name}"
+                original.replace(tombstone)
+                staged.append((original, tombstone))
+
+            try:
+                with self.database.connect() as connection:
+                    if recording_id is None:
+                        cursor = connection.execute(
+                            "DELETE FROM recordings WHERE volunteer_id = ?",
+                            (volunteer_id,),
+                        )
+                    else:
+                        cursor = connection.execute(
+                            "DELETE FROM recordings WHERE volunteer_id = ? AND id = ?",
+                            (volunteer_id, recording_id),
+                        )
+                    deleted = int(cursor.rowcount)
+            except Exception:
+                for original, tombstone in reversed(staged):
+                    if tombstone.exists() and not original.exists():
+                        tombstone.replace(original)
+                raise
+
+            cleanup_failed = False
+            for _, tombstone in staged:
+                try:
+                    tombstone.unlink(missing_ok=True)
+                except OSError:
+                    cleanup_failed = True
+            if cleanup_failed:
+                raise CollectorError(
+                    "recording metadata was removed but file cleanup is pending server restart"
+                )
+            return deleted
+        except Exception:
+            raise
+
+    def _managed_audio_path(self, raw_path: str | Path) -> Path:
+        path = Path(raw_path).resolve()
+        try:
+            path.relative_to(self.audio_dir)
+        except ValueError as exc:
+            raise CollectorError("audio path is outside managed storage") from exc
+        return path
+
+    def _purge_delete_tombstones(self) -> None:
+        for path in self.audio_dir.glob(".delete-*"):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # A locked file will be retried on the next server start.
+                pass
+
+    def _require_volunteer(self, volunteer_id: str, require_active: bool = True) -> None:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT id FROM volunteers WHERE id = ?", (volunteer_id,)
+                "SELECT id, consent_active FROM volunteers WHERE id = ?", (volunteer_id,)
             ).fetchone()
         if not row:
             raise NotFoundError("volunteer is not registered")
+        if require_active and not row["consent_active"]:
+            raise ForbiddenError("volunteer consent has been revoked")

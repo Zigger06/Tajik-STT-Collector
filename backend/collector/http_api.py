@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
+import secrets
+import tempfile
 import threading
 import traceback
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,7 +15,7 @@ from typing import Type
 from urllib.parse import parse_qs, urlparse
 
 from .security import DeviceSecurity, RateLimitError
-from .service import CollectorError, CollectorService
+from .service import CollectorError, CollectorService, NotFoundError
 
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -29,12 +33,20 @@ def make_handler(
     admin_path = Path(admin_file)
     security = security_context or DeviceSecurity(service)
 
+    # Stage 3 removes UUID-only reviewer-media access. These opaque assignment
+    # tokens are scoped to one recording and reviewer and die after review or a
+    # server restart. Stage 4 will add explicit TTL/one-time semantics.
+    review_media_tokens: dict[str, tuple[str, str]] = {}
+    review_media_lock = threading.Lock()
+
     class CollectorRequestHandler(BaseHTTPRequestHandler):
-        server_version = "TajikSTTCollector/0.2"
+        server_version = "TajikSTTCollector/0.3"
 
         def do_GET(self) -> None:  # noqa: N802
             try:
                 parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+
                 if parsed.path in ("/", "/admin"):
                     if allow_admin:
                         self._serve_admin()
@@ -62,15 +74,38 @@ def make_handler(
                     self._send_json({"texts": service.list_needs_admin()})
                     return
 
-                # Reviewer media gets dedicated short-lived assignment tokens in
-                # security stage 4. Until then preserve the existing UUID media
-                # flow so this stage does not break Android playback.
+                if parsed.path == "/api/v1/me/recordings":
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._send_json(
+                        {
+                            "recordings": service.list_volunteer_recordings(volunteer_id),
+                            "consent_active": service.volunteer_consent_active(volunteer_id),
+                        }
+                    )
+                    return
+                if parsed.path == "/api/v1/me/recordings/archive":
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._serve_my_archive(volunteer_id)
+                    return
+                own_recording_id = self._own_audio_id(parsed.path)
+                if own_recording_id is not None:
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._serve_file(
+                        service.volunteer_recording_path(volunteer_id, own_recording_id),
+                        "audio/wav",
+                    )
+                    return
+
                 if parsed.path.startswith("/media/") and parsed.path.endswith(".wav"):
                     recording_id = parsed.path.removeprefix("/media/").removesuffix(".wav")
+                    token = query.get("review_token", [""])[0]
+                    with review_media_lock:
+                        assignment = review_media_tokens.get(token)
+                    if not token or not assignment or assignment[0] != recording_id:
+                        raise _RouteNotFound()
                     self._serve_file(service.recording_path(recording_id), "audio/wav")
                     return
 
-                query = parse_qs(parsed.query)
                 if parsed.path == "/api/v1/tasks/recording":
                     volunteer_id = self._authenticated_volunteer("task")
                     excluded = query.get("exclude_text_ids", [""])[0]
@@ -87,7 +122,14 @@ def make_handler(
                     self._send_json({"task": service.get_text_review_task(volunteer_id)})
                 elif parsed.path == "/api/v1/tasks/audio-review":
                     volunteer_id = self._authenticated_volunteer("task")
-                    self._send_json({"task": service.get_audio_review_task(volunteer_id)})
+                    task = service.get_audio_review_task(volunteer_id)
+                    if task is not None:
+                        task = dict(task)
+                        token = secrets.token_urlsafe(24)
+                        with review_media_lock:
+                            review_media_tokens[token] = (task["id"], volunteer_id)
+                        task["audio_url"] = f"/media/{task['id']}.wav?review_token={token}"
+                    self._send_json({"task": task})
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "route not found")
             except RateLimitError as exc:
@@ -132,6 +174,11 @@ def make_handler(
                         content=body.get("content", ""),
                     )
                     self._send_json(result)
+                    return
+
+                if parsed.path == "/api/v1/me/revoke-consent":
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._send_json(service.revoke_consent(volunteer_id))
                     return
 
                 query = parse_qs(parsed.query)
@@ -187,12 +234,14 @@ def make_handler(
                 elif parsed.path == "/api/v1/audio-reviews":
                     volunteer_id = self._authenticated_volunteer("review")
                     body = self._read_json()
+                    recording_id = body.get("recording_id", "")
                     result = service.submit_audio_review(
-                        recording_id=body.get("recording_id", ""),
+                        recording_id=recording_id,
                         volunteer_id=volunteer_id,
                         verdict=body.get("verdict", ""),
                         reason=body.get("reason", ""),
                     )
+                    self._invalidate_review_media(recording_id, volunteer_id)
                     self._send_json(result, HTTPStatus.CREATED)
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "route not found")
@@ -207,13 +256,43 @@ def make_handler(
                 traceback.print_exc()
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
-        def _authenticated_volunteer(self, category: str) -> str:
+        def do_DELETE(self) -> None:  # noqa: N802
+            try:
+                parsed = urlparse(self.path)
+                if parsed.path == "/api/v1/me/recordings":
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._send_json(service.delete_all_volunteer_recordings(volunteer_id))
+                    return
+                recording_id = self._own_recording_delete_id(parsed.path)
+                if recording_id is not None:
+                    volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
+                    self._send_json(
+                        service.delete_volunteer_recording(volunteer_id, recording_id)
+                    )
+                    return
+                self._send_error(HTTPStatus.NOT_FOUND, "route not found")
+            except RateLimitError as exc:
+                self._log_rate_limit(exc)
+                self._send_error(exc.status_code, str(exc), retry_after=exc.retry_after)
+            except CollectorError as exc:
+                self._send_error(exc.status_code, str(exc))
+            except Exception as exc:  # pragma: no cover - last-resort server protection
+                traceback.print_exc()
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+
+        def _authenticated_volunteer(
+            self,
+            category: str,
+            *,
+            allow_revoked: bool = False,
+        ) -> str:
             volunteer_id = self.headers.get("X-Volunteer-Id", "")
             return security.authenticate(
                 volunteer_id,
                 self._bearer_secret(),
                 category,
                 self._client_ip(),
+                allow_revoked=allow_revoked,
             )
 
         def _bearer_secret(self) -> str:
@@ -255,6 +334,70 @@ def make_handler(
             if not value:
                 raise CollectorError(f"missing query parameter: {name}")
             return value
+
+        @staticmethod
+        def _own_audio_id(path: str) -> str | None:
+            prefix = "/api/v1/me/recordings/"
+            suffix = "/audio"
+            if not path.startswith(prefix) or not path.endswith(suffix):
+                return None
+            value = path[len(prefix) : -len(suffix)].strip("/")
+            return value or None
+
+        @staticmethod
+        def _own_recording_delete_id(path: str) -> str | None:
+            prefix = "/api/v1/me/recordings/"
+            if not path.startswith(prefix):
+                return None
+            value = path[len(prefix) :].strip("/")
+            if not value or "/" in value or value == "archive":
+                return None
+            return value
+
+        def _serve_my_archive(self, volunteer_id: str) -> None:
+            recordings = service.list_volunteer_recordings(volunteer_id)
+            with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b") as spool:
+                exported_metadata: list[dict] = []
+                with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for recording in recordings:
+                        try:
+                            path = service.volunteer_recording_path(
+                                volunteer_id, recording["id"]
+                            )
+                        except NotFoundError:
+                            continue
+                        archive.write(path, arcname=f"{recording['id']}.wav")
+                        exported_metadata.append(recording)
+                    archive.writestr(
+                        "recordings.json",
+                        json.dumps(exported_metadata, ensure_ascii=False, indent=2),
+                    )
+                spool.seek(0, 2)
+                length = spool.tell()
+                spool.seek(0)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header(
+                    "Content-Disposition", 'attachment; filename="tajik-stt-my-recordings.zip"'
+                )
+                self.send_header("Content-Length", str(length))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                while True:
+                    chunk = spool.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+        def _invalidate_review_media(self, recording_id: str, volunteer_id: str) -> None:
+            with review_media_lock:
+                stale = [
+                    token
+                    for token, assignment in review_media_tokens.items()
+                    if assignment == (recording_id, volunteer_id)
+                ]
+                for token in stale:
+                    review_media_tokens.pop(token, None)
 
         def _serve_admin(self) -> None:
             if not admin_path.exists():
@@ -310,9 +453,12 @@ def make_handler(
             )
 
         def log_message(self, format: str, *args) -> None:
-            # BaseHTTPRequestHandler logs request lines, but never Authorization
-            # headers. Volunteer IDs are no longer carried in normal API URLs.
-            print(f"{self.client_address[0]} - {format % args}")
+            # Never print Authorization headers. Reviewer capability tokens are
+            # also redacted from the request line until stage 4 replaces them
+            # with short-lived one-time media grants.
+            message = format % args
+            message = re.sub(r"(review_token=)[^& ]+", r"\1<redacted>", message)
+            print(f"{self.client_address[0]} - {message}")
 
     return CollectorRequestHandler
 
