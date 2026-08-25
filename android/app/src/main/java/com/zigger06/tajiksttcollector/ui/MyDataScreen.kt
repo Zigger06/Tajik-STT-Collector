@@ -61,6 +61,7 @@ import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.network.ApiClient
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 @Composable
 fun MyDataScreen(
@@ -128,7 +129,7 @@ fun MyDataScreen(
                 error = ""
                 try {
                     val output = context.contentResolver.openOutputStream(uri)
-                        ?: error("Файл барои навиштан кушода нашуд.")
+                        ?: throw IOException("Файл барои навиштан кушода нашуд.")
                     output.use { ApiClient(settings).downloadOwnRecordingTo(recordingId, it) }
                     message = "Сабт ба дастгоҳи шумо боргирӣ шуд."
                 } catch (exception: Exception) {
@@ -149,7 +150,7 @@ fun MyDataScreen(
                 error = ""
                 try {
                     val output = context.contentResolver.openOutputStream(uri)
-                        ?: error("Файл барои навиштан кушода нашуд.")
+                        ?: throw IOException("Файл барои навиштан кушода нашуд.")
                     output.use { ApiClient(settings).downloadOwnArchiveTo(it) }
                     message = "Ҳамаи сабтҳои дастрас боргирӣ шуданд."
                 } catch (exception: Exception) {
