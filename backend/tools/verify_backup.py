@@ -5,7 +5,10 @@ import json
 import sqlite3
 from pathlib import Path
 
-from backup_collector import sha256_file
+try:
+    from .backup_collector import sha256_file
+except ImportError:  # Direct script execution: python tools/verify_backup.py ...
+    from backup_collector import sha256_file
 
 
 def verify_backup(backup_dir: str | Path) -> dict:
