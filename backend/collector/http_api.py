@@ -6,12 +6,14 @@ import re
 import secrets
 import tempfile
 import threading
+import time
 import traceback
 import zipfile
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Type
+from typing import Callable, Type
 from urllib.parse import parse_qs, urlparse
 
 from .security import DeviceSecurity, RateLimitError
@@ -20,6 +22,95 @@ from .service import CollectorError, CollectorService, NotFoundError
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+REVIEW_MEDIA_TTL_SECONDS = 5 * 60
+REVIEW_MEDIA_MAX_USES = 3
+
+
+@dataclass
+class ReviewMediaGrant:
+    recording_id: str
+    reviewer_id: str
+    expires_at: float
+    remaining_uses: int
+
+
+class ReviewMediaGrantStore:
+    """Short-lived bearer capabilities for reviewer audio.
+
+    Tokens live only in process memory, are scoped to one recording + reviewer,
+    expire quickly, have a small successful-download budget, and are invalidated
+    as soon as the reviewer submits the review. They are never persisted.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: int = REVIEW_MEDIA_TTL_SECONDS,
+        max_uses: int = REVIEW_MEDIA_MAX_USES,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.ttl_seconds = max(30, min(int(ttl_seconds), 15 * 60))
+        self.max_uses = max(1, min(int(max_uses), 5))
+        self.clock = clock
+        self._items: dict[str, ReviewMediaGrant] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, recording_id: str, reviewer_id: str) -> str:
+        now = self.clock()
+        with self._lock:
+            self._purge_locked(now)
+            # One current audio assignment per reviewer. Requesting a new task
+            # makes older media capabilities for that reviewer useless.
+            stale = [
+                token for token, grant in self._items.items()
+                if grant.reviewer_id == reviewer_id
+            ]
+            for token in stale:
+                self._items.pop(token, None)
+            token = secrets.token_urlsafe(32)
+            self._items[token] = ReviewMediaGrant(
+                recording_id=recording_id,
+                reviewer_id=reviewer_id,
+                expires_at=now + self.ttl_seconds,
+                remaining_uses=self.max_uses,
+            )
+            return token
+
+    def consume(self, token: str, recording_id: str) -> ReviewMediaGrant | None:
+        if not token:
+            return None
+        now = self.clock()
+        with self._lock:
+            self._purge_locked(now)
+            grant = self._items.get(token)
+            if grant is None or grant.recording_id != recording_id:
+                return None
+            grant.remaining_uses -= 1
+            result = ReviewMediaGrant(
+                recording_id=grant.recording_id,
+                reviewer_id=grant.reviewer_id,
+                expires_at=grant.expires_at,
+                remaining_uses=grant.remaining_uses,
+            )
+            if grant.remaining_uses <= 0:
+                self._items.pop(token, None)
+            return result
+
+    def invalidate(self, recording_id: str, reviewer_id: str) -> None:
+        with self._lock:
+            stale = [
+                token for token, grant in self._items.items()
+                if grant.recording_id == recording_id and grant.reviewer_id == reviewer_id
+            ]
+            for token in stale:
+                self._items.pop(token, None)
+
+    def _purge_locked(self, now: float) -> None:
+        stale = [
+            token for token, grant in self._items.items()
+            if grant.expires_at <= now or grant.remaining_uses <= 0
+        ]
+        for token in stale:
+            self._items.pop(token, None)
 
 
 def make_handler(
@@ -29,18 +120,16 @@ def make_handler(
     public_base_url: str = "",
     allow_admin: bool = True,
     security_context: DeviceSecurity | None = None,
+    review_grants: ReviewMediaGrantStore | None = None,
 ) -> Type[BaseHTTPRequestHandler]:
-    admin_path = Path(admin_file)
+    del public_base_url  # Kept for compatibility with the existing launcher/API.
+    admin_path = Path(admin_file).resolve()
     security = security_context or DeviceSecurity(service)
-
-    # Stage 3 removes UUID-only reviewer-media access. These opaque assignment
-    # tokens are scoped to one recording and reviewer and die after review or a
-    # server restart. Stage 4 will add explicit TTL/one-time semantics.
-    review_media_tokens: dict[str, tuple[str, str]] = {}
-    review_media_lock = threading.Lock()
+    grants = review_grants or ReviewMediaGrantStore()
 
     class CollectorRequestHandler(BaseHTTPRequestHandler):
-        server_version = "TajikSTTCollector/0.3"
+        server_version = "TajikSTTCollector"
+        sys_version = ""
 
         def do_GET(self) -> None:  # noqa: N802
             try:
@@ -99,11 +188,13 @@ def make_handler(
                 if parsed.path.startswith("/media/") and parsed.path.endswith(".wav"):
                     recording_id = parsed.path.removeprefix("/media/").removesuffix(".wav")
                     token = query.get("review_token", [""])[0]
-                    with review_media_lock:
-                        assignment = review_media_tokens.get(token)
-                    if not token or not assignment or assignment[0] != recording_id:
+                    grant = grants.consume(token, recording_id)
+                    if grant is None:
                         raise _RouteNotFound()
-                    self._serve_file(service.recording_path(recording_id), "audio/wav")
+                    self._serve_file(
+                        self._review_media_path(recording_id, grant.reviewer_id),
+                        "audio/wav",
+                    )
                     return
 
                 if parsed.path == "/api/v1/tasks/recording":
@@ -125,10 +216,10 @@ def make_handler(
                     task = service.get_audio_review_task(volunteer_id)
                     if task is not None:
                         task = dict(task)
-                        token = secrets.token_urlsafe(24)
-                        with review_media_lock:
-                            review_media_tokens[token] = (task["id"], volunteer_id)
+                        token = grants.issue(task["id"], volunteer_id)
                         task["audio_url"] = f"/media/{task['id']}.wav?review_token={token}"
+                        task["audio_access_ttl_seconds"] = grants.ttl_seconds
+                        task["audio_access_max_uses"] = grants.max_uses
                     self._send_json({"task": task})
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "route not found")
@@ -139,9 +230,9 @@ def make_handler(
                 self._send_error(exc.status_code, str(exc))
             except ValueError:
                 self._send_error(HTTPStatus.BAD_REQUEST, "numeric parameter is invalid")
-            except Exception as exc:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover - last-resort server protection
                 traceback.print_exc()
-                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
         def do_POST(self) -> None:  # noqa: N802
             try:
@@ -208,7 +299,11 @@ def make_handler(
                 elif parsed.path == "/api/v1/recordings":
                     volunteer_id = self._authenticated_volunteer("upload")
                     content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
-                    if content_type not in ("audio/wav", "audio/x-wav", "application/octet-stream"):
+                    if content_type not in (
+                        "audio/wav",
+                        "audio/x-wav",
+                        "application/octet-stream",
+                    ):
                         raise CollectorError("Content-Type must be audio/wav")
                     length = self._content_length(MAX_AUDIO_BYTES)
                     audio = self.rfile.read(length)
@@ -241,7 +336,7 @@ def make_handler(
                         verdict=body.get("verdict", ""),
                         reason=body.get("reason", ""),
                     )
-                    self._invalidate_review_media(recording_id, volunteer_id)
+                    grants.invalidate(recording_id, volunteer_id)
                     self._send_json(result, HTTPStatus.CREATED)
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "route not found")
@@ -252,9 +347,9 @@ def make_handler(
                 self._send_error(HTTPStatus.BAD_REQUEST, "numeric parameter is invalid")
             except CollectorError as exc:
                 self._send_error(exc.status_code, str(exc))
-            except Exception as exc:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover - last-resort server protection
                 traceback.print_exc()
-                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
         def do_DELETE(self) -> None:  # noqa: N802
             try:
@@ -276,9 +371,9 @@ def make_handler(
                 self._send_error(exc.status_code, str(exc), retry_after=exc.retry_after)
             except CollectorError as exc:
                 self._send_error(exc.status_code, str(exc))
-            except Exception as exc:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover - last-resort server protection
                 traceback.print_exc()
-                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
         def _authenticated_volunteer(
             self,
@@ -300,7 +395,7 @@ def make_handler(
             prefix = "Bearer "
             if not authorization.startswith(prefix):
                 return ""
-            return authorization[len(prefix):].strip()
+            return authorization[len(prefix) :].strip()
 
         def _require_admin_route(self) -> None:
             if not allow_admin:
@@ -342,7 +437,9 @@ def make_handler(
             if not path.startswith(prefix) or not path.endswith(suffix):
                 return None
             value = path[len(prefix) : -len(suffix)].strip("/")
-            return value or None
+            if not value or "/" in value or "\\" in value:
+                return None
+            return value
 
         @staticmethod
         def _own_recording_delete_id(path: str) -> str | None:
@@ -350,9 +447,37 @@ def make_handler(
             if not path.startswith(prefix):
                 return None
             value = path[len(prefix) :].strip("/")
-            if not value or "/" in value or value == "archive":
+            if not value or "/" in value or "\\" in value or value == "archive":
                 return None
             return value
+
+        def _review_media_path(self, recording_id: str, reviewer_id: str) -> Path:
+            with service.database.connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT r.file_path
+                    FROM recordings r
+                    JOIN volunteers owner ON owner.id = r.volunteer_id
+                    WHERE r.id = ?
+                      AND r.status = 'pending'
+                      AND owner.consent_active = 1
+                      AND r.volunteer_id <> ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM audio_reviews ar
+                          WHERE ar.recording_id = r.id AND ar.volunteer_id = ?
+                      )
+                    """,
+                    (recording_id, reviewer_id, reviewer_id),
+                ).fetchone()
+            if not row:
+                raise _RouteNotFound()
+            path = Path(row["file_path"]).resolve()
+            audio_root = service.audio_dir.resolve()
+            if path.parent != audio_root:
+                raise _RouteNotFound()
+            if not path.exists() or not path.is_file():
+                raise _RouteNotFound()
+            return path
 
         def _serve_my_archive(self, volunteer_id: str) -> None:
             recordings = service.list_volunteer_recordings(volunteer_id)
@@ -378,26 +503,18 @@ def make_handler(
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/zip")
                 self.send_header(
-                    "Content-Disposition", 'attachment; filename="tajik-stt-my-recordings.zip"'
+                    "Content-Disposition",
+                    'attachment; filename="tajik-stt-my-recordings.zip"',
                 )
                 self.send_header("Content-Length", str(length))
                 self.send_header("Cache-Control", "no-store")
+                self._send_security_headers()
                 self.end_headers()
                 while True:
                     chunk = spool.read(64 * 1024)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
-
-        def _invalidate_review_media(self, recording_id: str, volunteer_id: str) -> None:
-            with review_media_lock:
-                stale = [
-                    token
-                    for token, assignment in review_media_tokens.items()
-                    if assignment == (recording_id, volunteer_id)
-                ]
-                for token in stale:
-                    review_media_tokens.pop(token, None)
 
         def _serve_admin(self) -> None:
             if not admin_path.exists():
@@ -414,10 +531,13 @@ def make_handler(
             self.send_response(HTTPStatus.OK)
             self.send_header(
                 "Content-Type",
-                content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                content_type
+                or mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
             )
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -427,10 +547,16 @@ def make_handler(
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(data)
 
-        def _send_error(self, status: int, message: str, retry_after: int | None = None) -> None:
+        def _send_error(
+            self,
+            status: int,
+            message: str,
+            retry_after: int | None = None,
+        ) -> None:
             data = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -438,8 +564,18 @@ def make_handler(
             self.send_header("Cache-Control", "no-store")
             if retry_after is not None:
                 self.send_header("Retry-After", str(retry_after))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(data)
+
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Permissions-Policy",
+                "camera=(), geolocation=(), microphone=()",
+            )
 
         def _client_ip(self) -> str:
             return self.client_address[0] if self.client_address else ""
@@ -453,9 +589,9 @@ def make_handler(
             )
 
         def log_message(self, format: str, *args) -> None:
-            # Never print Authorization headers. Reviewer capability tokens are
-            # also redacted from the request line until stage 4 replaces them
-            # with short-lived one-time media grants.
+            # BaseHTTPRequestHandler never logs Authorization headers. Reviewer
+            # capabilities are in short-lived URLs for Android MediaPlayer, so
+            # redact them before printing the request line as well.
             message = format % args
             message = re.sub(r"(review_token=)[^& ]+", r"\1<redacted>", message)
             print(f"{self.client_address[0]} - {message}")
@@ -487,7 +623,11 @@ def serve(
     allow_admin: bool = True,
 ) -> None:
     handler = make_handler(
-        service, api_key, admin_file, public_base_url, allow_admin=allow_admin
+        service,
+        api_key,
+        admin_file,
+        public_base_url,
+        allow_admin=allow_admin,
     )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Tajik STT Collector: http://127.0.0.1:{port}/admin")
@@ -513,6 +653,8 @@ def serve_online(
     """Run a Funnel-facing API and a separate computer-only admin panel."""
     if admin_host != "127.0.0.1":
         raise ValueError("The online admin panel must bind to 127.0.0.1 only")
+    if public_host != "127.0.0.1":
+        raise ValueError("The online public API target must bind to 127.0.0.1 only")
 
     public_handler = make_handler(
         service,

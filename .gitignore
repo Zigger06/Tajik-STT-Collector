@@ -15,9 +15,14 @@ signing.properties
 # Local collector database and audio (never commit volunteer recordings)
 backend/runtime/
 backend/exports/
+backend/backups/
 backend/*.db
 backend/*.db-shm
 backend/*.db-wal
+
+# Encrypted local data containers / backup media images
+*.vhd
+*.vhdx
 
 # Python
 __pycache__/
