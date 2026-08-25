@@ -2,6 +2,8 @@ package com.zigger06.tajiksttcollector.network
 
 import com.zigger06.tajiksttcollector.data.AppSettings
 import com.zigger06.tajiksttcollector.data.AudioReviewTask
+import com.zigger06.tajiksttcollector.data.MyDataSnapshot
+import com.zigger06.tajiksttcollector.data.OwnRecording
 import com.zigger06.tajiksttcollector.data.PendingRecording
 import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.VolunteerStats
@@ -16,6 +18,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -25,7 +28,7 @@ class ApiClient(private val settings: AppSettings) {
     private val baseUrl = settings.serverUrl.trim().trimEnd('/')
     private val client = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
@@ -153,6 +156,75 @@ class ApiClient(private val settings: AppSettings) {
             Unit
         }
 
+    suspend fun myData(): MyDataSnapshot = withContext(Dispatchers.IO) {
+        val response = execute(
+            authorizedBuilder("$baseUrl/api/v1/me/recordings").get().build(),
+        )
+        val array = response.optJSONArray("recordings")
+        val recordings = buildList {
+            if (array != null) {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    add(
+                        OwnRecording(
+                            id = item.getString("id"),
+                            status = item.optString("status", "pending"),
+                            createdAt = item.optString("created_at", ""),
+                            text = item.optString("text", ""),
+                            durationMs = item.optLong("duration_ms", 0L),
+                            sampleRate = item.optInt("sample_rate", 16000),
+                        ),
+                    )
+                }
+            }
+        }
+        MyDataSnapshot(
+            recordings = recordings,
+            consentActive = response.optBoolean("consent_active", true),
+        )
+    }
+
+    suspend fun downloadOwnRecordingTo(recordingId: String, output: OutputStream) =
+        withContext(Dispatchers.IO) {
+            val url = "$baseUrl/api/v1/me/recordings/$recordingId/audio"
+            executeTo(authorizedBuilder(url).get().build(), output)
+        }
+
+    suspend fun downloadOwnArchiveTo(output: OutputStream) = withContext(Dispatchers.IO) {
+        executeTo(
+            authorizedBuilder("$baseUrl/api/v1/me/recordings/archive").get().build(),
+            output,
+        )
+    }
+
+    suspend fun deleteOwnRecording(recordingId: String) = withContext(Dispatchers.IO) {
+        execute(
+            authorizedBuilder("$baseUrl/api/v1/me/recordings/$recordingId")
+                .delete()
+                .build(),
+        )
+        Unit
+    }
+
+    suspend fun deleteAllOwnRecordings(): Int = withContext(Dispatchers.IO) {
+        execute(
+            authorizedBuilder("$baseUrl/api/v1/me/recordings")
+                .delete()
+                .build(),
+        ).optInt("deleted", 0)
+    }
+
+    suspend fun revokeConsent() = withContext(Dispatchers.IO) {
+        val empty = JSONObject().toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+        execute(
+            authorizedBuilder("$baseUrl/api/v1/me/revoke-consent")
+                .post(empty)
+                .build(),
+        )
+        Unit
+    }
+
     private fun registrationRequest(
         body: JSONObject,
         nonce: String = "",
@@ -194,6 +266,23 @@ class ApiClient(private val settings: AppSettings) {
                 throw ApiException(response.code, json.optString("error", "HTTP ${response.code}"))
             }
             return json
+        }
+    }
+
+    private fun executeTo(request: Request, output: OutputStream) {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val text = response.body?.string().orEmpty()
+                val message = try {
+                    JSONObject(text).optString("error", "HTTP ${response.code}")
+                } catch (_: Exception) {
+                    "HTTP ${response.code}"
+                }
+                throw ApiException(response.code, message)
+            }
+            val body = response.body ?: throw IOException("Server returned an empty file")
+            body.byteStream().use { input -> input.copyTo(output, 64 * 1024) }
+            output.flush()
         }
     }
 
