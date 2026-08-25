@@ -17,6 +17,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result {
         val store = LocalStore(applicationContext)
         val settings = store.loadSettings()
+        if (settings.participationRevoked) return Result.success()
         if (!settings.isConfigured) return Result.failure()
         val api = ApiClient(settings)
         return try {
@@ -50,6 +51,10 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request,
             )
+        }
+
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_UPLOAD_WORK)
         }
     }
 }
