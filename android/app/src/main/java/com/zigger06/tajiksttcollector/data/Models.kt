@@ -60,6 +60,11 @@ data class OwnRecording(
     val sampleRate: Int,
 )
 
+data class MyDataSnapshot(
+    val recordings: List<OwnRecording>,
+    val consentActive: Boolean,
+)
+
 data class PendingRecording(
     val id: String,
     val textId: Long,
