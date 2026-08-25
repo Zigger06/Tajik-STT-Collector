@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.io.File
 import java.util.UUID
 
 const val RECORDING_BATCH_SIZE = 5
@@ -36,6 +37,7 @@ class LocalStore(context: Context) {
             dialect = preferences.getString("dialect", "") ?: "",
             serverUrl = preferences.getString("server_url", "") ?: "",
             consent = preferences.getBoolean("consent", false),
+            participationRevoked = preferences.getBoolean("participation_revoked", false),
         )
     }
 
@@ -48,7 +50,16 @@ class LocalStore(context: Context) {
             .putString("dialect", settings.dialect.trim())
             .putString("server_url", settings.serverUrl.trim().trimEnd('/'))
             .putBoolean("consent", settings.consent)
+            .putBoolean("participation_revoked", settings.participationRevoked)
             .apply()
+    }
+
+    fun markParticipationRevoked() {
+        preferences.edit()
+            .putBoolean("consent", false)
+            .putBoolean("participation_revoked", true)
+            .apply()
+        clearPendingRecordings()
     }
 
     fun cachedSubmittedCount(): Int = preferences.getInt("submitted_count", 0)
@@ -148,6 +159,30 @@ class LocalStore(context: Context) {
 
     fun removePending(id: String) {
         database.writableDatabase.delete("pending_recordings", "id = ?", arrayOf(id))
+    }
+
+    fun clearPendingRecordings(): Int {
+        val paths = mutableListOf<String>()
+        database.readableDatabase.query(
+            "pending_recordings",
+            arrayOf("file_path"),
+            null,
+            null,
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            val filePath = cursor.getColumnIndexOrThrow("file_path")
+            while (cursor.moveToNext()) paths += cursor.getString(filePath)
+        }
+        paths.forEach { path ->
+            try {
+                File(path).delete()
+            } catch (_: SecurityException) {
+                // App-private queue cleanup is best-effort; DB entry is still removed.
+            }
+        }
+        return database.writableDatabase.delete("pending_recordings", null, null)
     }
 
     fun pendingCount(): Int = database.readableDatabase.rawQuery(
