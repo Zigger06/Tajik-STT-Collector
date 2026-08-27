@@ -52,72 +52,105 @@ Note: reviewer capabilities are short-lived bearer URLs because Android `MediaPl
 - `backup-manifest.json` records hashes; `COMPLETE` is written only after the snapshot completes.
 - `backend/tools/verify_backup.py` checks the COMPLETE marker, database hash, SQLite `PRAGMA integrity_check`, recording set and every WAV hash.
 - Backup scripts never delete or overwrite source recordings.
-- Production backup creation refuses to proceed without explicit encrypted-destination confirmation; the Windows wrapper additionally checks BitLocker protection on the destination drive.
-- Local backup folders and `.vhd/.vhdx` files are ignored by Git.
+- Production backup creation refuses to proceed without explicit encrypted-destination confirmation.
+- `backend/backup_to_encrypted_volume.ps1` is suitable for a manually mounted VeraCrypt volume (including Windows Home) or another encrypted volume. It requires an explicit confirmation switch and refuses to place the backup on the same mounted volume as the live data.
+- `backend/backup_to_bitlocker.ps1` remains available for Windows editions where a separate BitLocker-protected backup volume can be verified by PowerShell.
+- Local backup folders and common encrypted-container/image files (`.hc`, `.tc`, `.vhd`, `.vhdx`) are ignored by Git.
 
 ## MANUAL — must be completed on the real Windows server / phone
 
 Do not call the deployment ready for public advertising until the relevant items below are checked on the actual machine.
 
-### 1. Create the encrypted VHDX for live Collector data
+### 1. Create and use an encrypted live-data volume
 
-Recommended layout:
+For **Windows Home**, the recommended deployment profile is a manually created **VeraCrypt standard file container**. Windows Pro/Enterprise/Education may alternatively use a BitLocker-protected VHDX.
+
+Recommended Windows Home layout:
 
 ```text
 C:\Users\<you>\Documents\GitHub\Tajik-STT-Collector\   # code only
-T:\TajikSTT\runtime\                                   # encrypted VHDX
-    collector.db
-    online_config.json
-    audio\
+C:\Users\<you>\TajikSTT-Secure\TajikSTT-Secure.hc    # encrypted VeraCrypt container
+
+T:\                                                      # mounted/unlocked VeraCrypt volume
+└── TajikSTT\runtime\
+    ├── collector.db
+    ├── online_config.json
+    └── audio\
 ```
 
-Use Windows **Disk Management** manually:
+Create the VeraCrypt container manually:
 
-1. `Action -> Create VHD`.
-2. Create `TajikSTT-Secure.vhdx` with enough capacity for expected audio growth (for example 20–50 GB to start; choose based on your collection plan).
-3. Initialize it as GPT, create one NTFS volume and assign a dedicated drive letter such as `T:`.
-4. In File Explorer, right-click the new VHDX volume -> **Turn on BitLocker**.
-5. Use a strong unique BitLocker password.
-6. Save the BitLocker recovery key in at least one location that is **not** the same SSD, not GitHub, and not the Collector folder. A printed copy or a separate protected offline device is appropriate.
-7. Do not enable automatic unlocking unless you explicitly accept that anyone who can use the unlocked Windows session can access the Collector data.
+1. `Create Volume -> Create an encrypted file container -> Standard VeraCrypt volume`.
+2. Store the container outside the Git repository, for example `C:\Users\<you>\TajikSTT-Secure\TajikSTT-Secure.hc`.
+3. Use a strong unique passphrase and do not put it in scripts, Git, screenshots or chat logs.
+4. A normal AES-based VeraCrypt volume is sufficient; use NTFS for the mounted filesystem.
+5. Mount it with a dedicated letter such as `T:` before starting Collector.
+6. Do **not** enable automatic mounting/unlocking unless you deliberately accept that an unlocked Windows session can immediately access the voice data.
+7. Dismount the volume when Collector is not running.
+8. Keep a secure offline record of the VeraCrypt passphrase/recovery information. Losing the only unlock secret can make the dataset unrecoverable.
 
-The repository does not create, mount, unlock or encrypt this VHDX automatically.
+The repository never creates, mounts, unlocks or encrypts VeraCrypt/BitLocker volumes automatically.
 
 ### 2. Point the backend at the encrypted runtime
 
-After mounting/unlocking the VHDX, create:
+After mounting/unlocking the encrypted volume, create:
 
 ```text
 T:\TajikSTT\runtime
 T:\TajikSTT\runtime\audio
 ```
 
-Before moving any existing real data, stop the Python Collector backend. Copy (do not move first) the current `backend\runtime\` contents to `T:\TajikSTT\runtime\`, verify the copy, then configure the user environment variable:
+Before migrating existing real data, stop the Python Collector backend. **Copy, do not move first**, the existing `backend\runtime\` contents to `T:\TajikSTT\runtime\`.
+
+Recommended verification before switching permanently:
+
+```powershell
+$src = "C:\Users\<you>\Documents\GitHub\Tajik-STT-Collector\backend\runtime"
+robocopy "$src" "T:\TajikSTT\runtime" /E /COPY:DAT /DCOPY:DAT /R:1 /W:1
+
+py -3.12 -c "import sqlite3; db=sqlite3.connect(r'T:\TajikSTT\runtime\collector.db'); print(db.execute('PRAGMA integrity_check').fetchone()[0]); db.close()"
+
+(Get-ChildItem "$src\audio" -Filter *.wav -File -ErrorAction SilentlyContinue).Count
+(Get-ChildItem "T:\TajikSTT\runtime\audio" -Filter *.wav -File -ErrorAction SilentlyContinue).Count
+```
+
+Expected: SQLite prints `ok`, the WAV counts match, and Robocopy reports no failed/mismatched files.
+
+Temporarily test the new runtime in the current PowerShell first:
+
+```powershell
+$env:TAJIK_COLLECTOR_DATA="T:\TajikSTT\runtime"
+cd C:\Users\<you>\Documents\GitHub\Tajik-STT-Collector\backend
+py -3.12 server.py stats
+```
+
+If the expected statistics are present, configure the user environment variable:
 
 ```powershell
 setx TAJIK_COLLECTOR_DATA "T:\TajikSTT\runtime"
 ```
 
-Open a **new** terminal after `setx`, then verify:
+Open a **new** terminal and verify again:
 
 ```powershell
 $env:TAJIK_COLLECTOR_DATA
-cd C:\Users\MLscientist\Documents\GitHub\Tajik-STT-Collector\backend
+cd C:\Users\<you>\Documents\GitHub\Tajik-STT-Collector\backend
 py -3.12 server.py stats
 ```
 
-Only after the encrypted copy works should the old unencrypted runtime copy be retired manually. Do not delete the old copy before this verification and before a separate encrypted backup exists.
+Do not delete the old unencrypted runtime until the encrypted runtime has been verified **and** a separate encrypted backup has been created and verified.
 
 ### 3. Restrict Windows access
 
 Manually verify:
 
 - the Windows account used to run Collector has a strong login password/PIN;
-- the encrypted VHDX is locked when Collector is not running;
+- the VeraCrypt/BitLocker live-data volume is dismounted/locked when Collector is not running;
 - the Collector runtime is not in OneDrive/Dropbox/Google Drive or another automatic cloud-sync folder;
 - Windows Defender/antivirus is enabled and Windows is updated;
-- no unrelated Windows users have access to `T:\TajikSTT`;
-- do not share `T:` or the runtime folder over SMB.
+- no unrelated Windows users have access to the mounted Collector data volume;
+- do not share `T:` or the runtime folder over SMB;
+- do not store the VeraCrypt password, recovery material, admin key or Android signing passwords in the repository.
 
 If you change NTFS ACLs with `icacls`, inspect the current ACL first and keep a recovery/admin path. Do not paste destructive ACL commands blindly.
 
@@ -147,22 +180,28 @@ Also verify manually:
 
 ### 5. Create an encrypted backup on a DIFFERENT physical device
 
-A VHDX backup stored on the same SSD does **not** protect against SSD failure.
+An encrypted live-data container stored on the server SSD does **not** protect against SSD failure.
 
-Recommended production rule:
+Recommended production rule for Windows Home:
 
-- live data: encrypted VHDX on the server SSD;
-- backup: separate external SSD/HDD/USB or another physical disk protected by BitLocker;
-- keep at least two rotating verified snapshots if the dataset becomes important.
+- live data: VeraCrypt container on the server SSD, mounted as `T:` only when needed;
+- backup: a **different physical SSD/HDD/USB** containing a separate VeraCrypt-encrypted volume/container, mounted for example as `B:` only during backup/verification;
+- keep at least two rotating verified snapshots once the dataset becomes important.
 
-Mount/unlock the encrypted backup drive, for example `B:`, create `B:\TajikSTT-Backups`, stop the backend for the simplest consistent operational procedure, then run:
+A backup VeraCrypt container must itself live on the external/different physical device. Creating a second container on the same server SSD does not satisfy the SSD-failure requirement.
+
+After manually mounting/unlocking the encrypted backup volume as `B:`, stop the backend for the simplest operational procedure and run:
 
 ```powershell
-cd C:\Users\MLscientist\Documents\GitHub\Tajik-STT-Collector\backend
-.\backup_to_bitlocker.ps1 -BackupRoot "B:\TajikSTT-Backups"
+cd C:\Users\<you>\Documents\GitHub\Tajik-STT-Collector\backend
+.\backup_to_encrypted_volume.ps1 `
+    -BackupRoot "B:\TajikSTT-Backups" `
+    -EncryptedDestinationConfirmed
 ```
 
-The wrapper performs a read-only BitLocker status check before invoking the backup tool. It does not contain a password/key and does not delete originals.
+The generic wrapper cannot discover a VeraCrypt passphrase and does not try to. The confirmation switch means **you have already checked that `B:` is the intended mounted encrypted backup volume**. The wrapper also refuses a backup when source and destination use the same drive letter.
+
+For a separate BitLocker-protected backup disk on a supported Windows edition, `backup_to_bitlocker.ps1` may be used instead.
 
 Verify the newest snapshot explicitly:
 
@@ -176,7 +215,7 @@ Do not consider a backup healthy until verification succeeds.
 
 At least once before serious collection, test restore without overwriting production data:
 
-1. Mount a separate encrypted test VHDX or empty encrypted folder.
+1. Mount a separate encrypted test volume/container or create an empty directory on a mounted encrypted test volume.
 2. Run `verify_backup.py` against the chosen snapshot.
 3. Copy `collector.db` and `audio\` from the backup into a new test runtime directory.
 4. Temporarily point only the current terminal at the restored test directory:
@@ -213,7 +252,7 @@ Use a test volunteer on a real Android phone and manually verify all of the foll
 
 Repository CI builds/tests release code, but before advertising verify the **actual signed APK** produced with the permanent GitHub Secrets:
 
-1. Bump `versionCode` and `versionName` for the real release; do not overwrite the old `v0.5.0` tag.
+1. Bump `versionCode` and `versionName` for the real release; do not overwrite an old distributed tag.
 2. Run `Actions -> Publish release APK` from `main` only when all MANUAL checks above are complete.
 3. Confirm the workflow's `apksigner verify` step succeeds.
 4. Install that exact downloaded release APK on a clean test phone.
@@ -222,9 +261,10 @@ Repository CI builds/tests release code, but before advertising verify the **act
 
 ### 9. Operational habits after launch
 
-- Lock/dismount the encrypted data VHDX when the server is not in use.
-- Keep Windows/Tailscale/Python updated deliberately; do not auto-upgrade major components minutes before a campaign.
+- Dismount the encrypted VeraCrypt/BitLocker live-data volume when the server is not in use.
+- Mount/unlock `T:` **before** starting Collector; if the encrypted runtime is unavailable, do not silently fall back to collecting production data in `backend\runtime`.
+- Keep Windows/Tailscale/Python/VeraCrypt updated deliberately; do not auto-upgrade major components minutes before a campaign.
 - Run and verify encrypted backups on a schedule appropriate to collection volume (daily during active campaigns is a reasonable starting point).
 - Periodically test a restore, not just backup creation.
 - Watch server output for repeated rate-limit events or malformed traffic, but never add device secrets/reviewer tokens/admin keys to logs.
-- If the admin key or signing material is suspected leaked, stop public collection and rotate/recover before continuing.
+- If the admin key, VeraCrypt secret or signing material is suspected leaked, stop public collection and rotate/recover before continuing.
