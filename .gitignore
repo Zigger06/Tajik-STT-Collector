@@ -23,6 +23,9 @@ backend/*.db-wal
 # Encrypted local data containers / backup media images
 *.vhd
 *.vhdx
+*.hc
+*.tc
+TajikSTT-Secure/
 
 # Python
 __pycache__/
