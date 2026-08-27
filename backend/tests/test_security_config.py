@@ -61,6 +61,21 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         for pattern in ("*.jks", "*.keystore", "keystore.properties", "signing.properties"):
             self.assertIn(pattern, gitignore)
 
+    def test_veracrypt_containers_and_generic_backup_wrapper_are_guarded(self) -> None:
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("*.hc", gitignore)
+        self.assertIn("*.tc", gitignore)
+
+        wrapper = (ROOT / "backend/backup_to_encrypted_volume.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[switch]$EncryptedDestinationConfirmed", wrapper)
+        self.assertIn("if (-not $EncryptedDestinationConfirmed)", wrapper)
+        self.assertIn("--encrypted-destination-confirmed", wrapper)
+        self.assertIn("BackupRoot must be on a different mounted volume", wrapper)
+        self.assertNotIn("Remove-Item", wrapper)
+        self.assertNotIn("Clear-Content", wrapper)
+
     def test_public_app_config_contains_only_https_server_url(self) -> None:
         config = json.loads((ROOT / "docs/app-config.json").read_text(encoding="utf-8"))
         self.assertEqual(set(config), {"server_url"})
