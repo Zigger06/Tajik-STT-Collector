@@ -233,7 +233,6 @@ class DeviceSecurity:
         volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
         secret = self.validate_secret(secret)
         device_key = self.device_key(volunteer_id, secret)
-        self.rate_limiter.check("registration", device_key, ip)
 
         with self.service.database.connect() as connection:
             volunteer = connection.execute(
@@ -247,6 +246,10 @@ class DeviceSecurity:
 
         resume_revoked = False
         if credential:
+            # A routine authenticated refresh is not a Sybil/registration event.
+            # Older Android workers called this endpoint before every upload batch;
+            # charging those calls against the six-per-hour creation limit caused
+            # legitimate volunteers to lock themselves out during normal use.
             self._verify_row(secret, credential)
             if volunteer and not volunteer["consent_active"]:
                 # Repeated/background registration must never silently undo an
@@ -258,6 +261,10 @@ class DeviceSecurity:
                 self.challenges.verify(challenge_nonce, challenge_proof, device_key)
                 resume_revoked = True
         else:
+            # Only creation/legacy credential claiming consumes the strict
+            # registration rate limit. This preserves anti-Sybil protection while
+            # keeping normal authenticated app traffic out of that bucket.
+            self.rate_limiter.check("registration", device_key, ip)
             # New installs and one-time migration of pre-auth installs both need
             # proof-of-work. This creates Sybil friction without asking the user
             # for an account, CAPTCHA, phone number or email.
