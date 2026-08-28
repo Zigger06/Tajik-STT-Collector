@@ -245,12 +245,18 @@ class DeviceSecurity:
                 (volunteer_id,),
             ).fetchone()
 
+        resume_revoked = False
         if credential:
             self._verify_row(secret, credential)
             if volunteer and not volunteer["consent_active"]:
-                # Repeated background registration must never silently undo a
-                # user's explicit withdrawal. Re-consent needs a future explicit flow.
-                raise ForbiddenError("volunteer consent has been revoked")
+                # Repeated/background registration must never silently undo an
+                # explicit withdrawal. Re-consent is accepted only when the
+                # already-authenticated device proactively supplies a fresh,
+                # one-time proof-of-work challenge in the same registration call.
+                if not consent or not challenge_nonce or not challenge_proof:
+                    raise ForbiddenError("explicit re-consent is required")
+                self.challenges.verify(challenge_nonce, challenge_proof, device_key)
+                resume_revoked = True
         else:
             # New installs and one-time migration of pre-auth installs both need
             # proof-of-work. This creates Sybil friction without asking the user
@@ -274,6 +280,20 @@ class DeviceSecurity:
             dialect=dialect,
             consent=consent,
         )
+
+        if resume_revoked:
+            with self.service.database.connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE volunteers
+                    SET consent_active = 1,
+                        revoked_at = NULL
+                    WHERE id = ?
+                    """,
+                    (volunteer_id,),
+                )
+            result["consent_active"] = 1
+            result["revoked_at"] = None
 
         if not credential:
             salt = secrets.token_bytes(16)
