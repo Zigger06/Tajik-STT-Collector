@@ -8,7 +8,7 @@ from pathlib import Path
 
 from collector.database import Database
 from collector.http_api import serve, serve_online
-from collector.service import CollectorService
+from collector.storage_aware_service import StorageAwareCollectorService
 
 
 ROOT = Path(__file__).resolve().parent
@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    service = CollectorService(Database(DATABASE_PATH), AUDIO_DIR)
+    service = StorageAwareCollectorService(Database(DATABASE_PATH), AUDIO_DIR)
 
     if args.command == "serve":
         serve(
