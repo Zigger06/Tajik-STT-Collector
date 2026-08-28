@@ -38,12 +38,7 @@ class ApiClient(private val settings: AppSettings) {
     }
 
     suspend fun registerVolunteer() = withContext(Dispatchers.IO) {
-        val body = JSONObject()
-            .put("id", settings.volunteerId)
-            .put("display_name", settings.displayName)
-            .put("region", settings.region)
-            .put("dialect", settings.dialect)
-            .put("consent", settings.consent)
+        val body = registrationBody(settings.consent)
 
         try {
             execute(registrationRequest(body))
@@ -57,6 +52,28 @@ class ApiClient(private val settings: AppSettings) {
             }
             execute(registrationRequest(body, nonce, proof.toString()))
         }
+        Unit
+    }
+
+    /**
+     * Explicit re-consent is intentionally different from background registration.
+     * A fresh proof-of-work challenge is sent on the first request so the backend
+     * can distinguish a deliberate resume action from a stale/background worker.
+     */
+    suspend fun resumeConsent() = withContext(Dispatchers.IO) {
+        val challenge = registrationChallenge()
+        val nonce = challenge.getString("nonce")
+        val difficulty = challenge.getInt("difficulty")
+        val proof = withContext(Dispatchers.Default) {
+            solveRegistrationProof(nonce, difficulty)
+        }
+        execute(
+            registrationRequest(
+                registrationBody(consent = true),
+                nonce,
+                proof.toString(),
+            ),
+        )
         Unit
     }
 
@@ -224,6 +241,13 @@ class ApiClient(private val settings: AppSettings) {
         )
         Unit
     }
+
+    private fun registrationBody(consent: Boolean): JSONObject = JSONObject()
+        .put("id", settings.volunteerId)
+        .put("display_name", settings.displayName)
+        .put("region", settings.region)
+        .put("dialect", settings.dialect)
+        .put("consent", consent)
 
     private fun registrationRequest(
         body: JSONObject,
