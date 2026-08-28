@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,12 +47,10 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -68,8 +65,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -82,7 +77,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -103,6 +97,7 @@ import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.data.VolunteerStats
 import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.network.ServerConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
@@ -126,22 +121,35 @@ fun CollectorApp(
         mutableStateOf(if (settings.isConfigured) Screen.HOME else Screen.SETUP)
     }
     var pendingCount by remember { mutableIntStateOf(store.pendingCount()) }
-    var volunteerStats by remember {
-        mutableStateOf(VolunteerStats(store.cachedSubmittedCount(), 0, 0, 0))
+    var volunteerStats by remember { mutableStateOf(store.cachedVolunteerStats()) }
+
+    // Home numbers are local UI state. Polling tiny app-private SQLite/SharedPreferences
+    // is cheap and means WorkManager can update the screen within a fraction of a
+    // second after a successful upload without another server request or navigation.
+    LaunchedEffect(screen) {
+        if (screen == Screen.HOME) {
+            while (true) {
+                pendingCount = store.pendingCount()
+                volunteerStats = store.cachedVolunteerStats()
+                delay(400)
+            }
+        }
     }
 
-    LaunchedEffect(screen, pendingCount) {
-        if (screen == Screen.HOME) {
-            pendingCount = store.pendingCount()
-            if (settings.isConfigured) {
+    // Server-side review status may change while another volunteer is working, so
+    // refresh it gently. This is deliberately time-based rather than navigation-
+    // based: rapidly opening a screen and pressing Back must not create a stats flood.
+    LaunchedEffect(settings.volunteerId, settings.serverUrl, settings.participationRevoked) {
+        if (settings.isConfigured && !settings.participationRevoked) {
+            while (true) {
                 try {
-                    volunteerStats = ApiClient(settings).volunteerStats()
-                    store.saveSubmittedCount(volunteerStats.submitted)
+                    val fresh = ApiClient(settings).volunteerStats()
+                    store.saveVolunteerStats(fresh)
+                    volunteerStats = fresh
                 } catch (_: Exception) {
-                    volunteerStats = volunteerStats.copy(
-                        submitted = store.cachedSubmittedCount(),
-                    )
+                    // Offline is expected; cached values remain visible.
                 }
+                delay(60_000)
             }
         }
     }
@@ -190,7 +198,7 @@ fun CollectorApp(
                                 serverUrl = ServerConfig.resolve(candidate.serverUrl),
                             )
                             val api = ApiClient(configured)
-                            check(api.checkHealth()) { "Сервер ҷавоб надод." }
+                            check(api.checkHealth()) { "health failed" }
                             api.registerVolunteer()
                             store.saveSettings(configured)
                             settings = configured
@@ -198,7 +206,7 @@ fun CollectorApp(
                             screen = Screen.HOME
                             snackbar.showSnackbar("Пайвастшавӣ муваффақ шуд.")
                         } catch (error: Exception) {
-                            snackbar.showSnackbar(error.message ?: "Пайвастшавӣ нашуд.")
+                            snackbar.showSnackbar(userFacingError(error, "Пайвастшавӣ нашуд."))
                         }
                     }
                 },
@@ -397,8 +405,7 @@ private fun ActionCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                modifier = Modifier
-                    .size(52.dp),
+                modifier = Modifier.size(52.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -531,7 +538,7 @@ private fun RecordingScreen(
             try {
                 task = ApiClient(settings).recordingTask(store.pendingTextIds())
             } catch (exception: Exception) {
-                error = exception.message ?: "Матн гирифта нашуд."
+                error = userFacingError(exception, "Матн гирифта нашуд.")
             } finally {
                 loading = false
             }
@@ -548,8 +555,8 @@ private fun RecordingScreen(
             recorder.start(file)
             isRecording = true
             error = ""
-        } catch (exception: Exception) {
-            error = exception.message ?: "Сабт оғоз нашуд."
+        } catch (_: Exception) {
+            error = "Сабт оғоз нашуд."
         }
     }
 
@@ -674,13 +681,14 @@ private fun RecordingScreen(
                                 sampleRate = recording.sampleRate,
                             )
                             val batchReady = store.addPending(pending)
+                            ApiClient.discardRecordingTask(settings.volunteerId, currentTask.id)
                             sessionCount = store.stagedCount()
                             onQueueChanged()
                             result = null
                             task = null
                             if (batchReady) {
                                 UploadWorker.schedule(context)
-                                showMessage("5 сабт барои санҷиш фиристода мешавад. Раҳмат!")
+                                showMessage("5 сабт дар навбат нигоҳ дошта шуд ва дар замина фиристода мешавад.")
                                 onBack()
                             } else {
                                 showMessage(
@@ -696,7 +704,7 @@ private fun RecordingScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(
                             if (sessionCount + 1 >= RECORDING_BATCH_SIZE) {
-                                "Нигоҳ доштан ва фиристодани 5 сабт"
+                                "Нигоҳ доштани 5 сабт"
                             } else {
                                 "Нигоҳ доштан (${sessionCount + 1}/$RECORDING_BATCH_SIZE)"
                             },
@@ -766,7 +774,7 @@ private fun AddTextScreen(
                         source = ""
                         showMessage("Матн барои санҷиш фиристода шуд. Раҳмат!")
                     } catch (exception: Exception) {
-                        error = exception.message ?: "Матн фиристода нашуд."
+                        error = userFacingError(exception, "Матн фиристода нашуд.")
                     } finally {
                         sending = false
                     }
@@ -806,9 +814,13 @@ private fun TextReviewScreen(
             error = ""
             editMode = false
             correction = ""
-            try { task = ApiClient(settings).textReviewTask() }
-            catch (exception: Exception) { error = exception.message ?: "Матн гирифта нашуд." }
-            finally { loading = false }
+            try {
+                task = ApiClient(settings).textReviewTask()
+            } catch (exception: Exception) {
+                error = userFacingError(exception, "Матн гирифта нашуд.")
+            } finally {
+                loading = false
+            }
         }
     }
 
@@ -822,7 +834,7 @@ private fun TextReviewScreen(
                 task = null
                 loadTask()
             } catch (exception: Exception) {
-                error = exception.message ?: "Санҷиш фиристода нашуд."
+                error = userFacingError(exception, "Санҷиш фиристода нашуд.")
                 loading = false
             }
         }
@@ -914,9 +926,13 @@ private fun AudioReviewScreen(
             loading = true
             error = ""
             reason = ""
-            try { task = ApiClient(settings).audioReviewTask() }
-            catch (exception: Exception) { error = exception.message ?: "Сабт гирифта нашуд." }
-            finally { loading = false }
+            try {
+                task = ApiClient(settings).audioReviewTask()
+            } catch (exception: Exception) {
+                error = userFacingError(exception, "Сабт гирифта нашуд.")
+            } finally {
+                loading = false
+            }
         }
     }
 
@@ -931,7 +947,7 @@ private fun AudioReviewScreen(
                 task = null
                 loadTask()
             } catch (exception: Exception) {
-                error = exception.message ?: "Баҳо фиристода нашуд."
+                error = userFacingError(exception, "Баҳо фиристода нашуд.")
                 loading = false
             }
         }
@@ -967,7 +983,7 @@ private fun AudioReviewScreen(
                                 setOnPreparedListener { media -> media.start(); playing = true }
                                 setOnCompletionListener { stopPlayer() }
                                 setOnErrorListener { _, _, _ ->
-                                    error = "Аудио кушода нашуд."
+                                    error = "Аудио дастрас нашуд. «Такрор кардан»-ро пахш кунед."
                                     stopPlayer()
                                     true
                                 }
@@ -984,7 +1000,14 @@ private fun AudioReviewScreen(
                     Spacer(Modifier.width(8.dp))
                     Text(if (playing) "Қатъ кардан" else "Гӯш кардан")
                 }
-                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+                if (error.isNotBlank()) {
+                    Text(error, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = ::loadTask, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Такрор кардан")
+                    }
+                }
                 OutlinedTextField(
                     value = reason,
                     onValueChange = { reason = it },
