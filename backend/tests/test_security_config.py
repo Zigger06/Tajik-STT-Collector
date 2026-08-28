@@ -99,6 +99,18 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         self.assertIn('preferences.getString("device_secret", null)', local_store)
         self.assertIn("DeviceCredential.generateSecret()", local_store)
 
+    def test_configured_legacy_android_profile_bootstraps_device_credential_once(self) -> None:
+        activity = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/MainActivity.kt"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"device_credential_bootstrapped_v1"', activity)
+        self.assertIn("initialSettings.isConfigured", activity)
+        self.assertIn("ApiClient(initialSettings).registerVolunteer()", activity)
+        self.assertIn("putBoolean(migrationKey, true)", activity)
+        self.assertIn("credentialBootstrapEpoch++", activity)
+        self.assertIn("key(credentialBootstrapEpoch)", activity)
+
     def test_backend_does_not_take_volunteer_identity_from_query_or_json(self) -> None:
         http_api = (ROOT / "backend/collector/http_api.py").read_text(encoding="utf-8")
         security = (ROOT / "backend/collector/security.py").read_text(encoding="utf-8")
