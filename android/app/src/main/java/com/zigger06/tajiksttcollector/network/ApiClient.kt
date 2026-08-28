@@ -5,6 +5,7 @@ import com.zigger06.tajiksttcollector.data.AudioReviewTask
 import com.zigger06.tajiksttcollector.data.MyDataSnapshot
 import com.zigger06.tajiksttcollector.data.OwnRecording
 import com.zigger06.tajiksttcollector.data.PendingRecording
+import com.zigger06.tajiksttcollector.data.RECORDING_TASK_CACHE_TARGET
 import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.VolunteerStats
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +21,7 @@ import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
+import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
 
 class ApiException(val statusCode: Int, message: String) : IOException(message)
@@ -85,20 +87,43 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
+    /**
+     * Recording UI asks this for every prompt. The hot path is deliberately local:
+     * a prefetched task is returned without touching DNS, Funnel or the PC server.
+     * Only an empty cache performs one batch network request and fills the next
+     * several prompts at once.
+     */
     suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
         withContext(Dispatchers.IO) {
-            val builder = "$baseUrl/api/v1/tasks/recording".toHttpUrl().newBuilder()
-            if (excludeTextIds.isNotEmpty()) {
-                builder.addQueryParameter(
-                    "exclude_text_ids",
-                    excludeTextIds.distinct().take(100).joinToString(","),
-                )
-            }
-            parseTextTask(
-                execute(authorizedBuilder(builder.build().toString()).get().build())
-                    .optJSONObject("task"),
+            cachedRecordingTask(excludeTextIds)?.let { return@withContext it }
+            recordingTasks(RECORDING_TASK_CACHE_TARGET, excludeTextIds)
+            cachedRecordingTask(excludeTextIds)
+        }
+
+    suspend fun recordingTasks(
+        limit: Int = RECORDING_TASK_CACHE_TARGET,
+        excludeTextIds: List<Long> = emptyList(),
+    ): List<TextTask> = withContext(Dispatchers.IO) {
+        val builder = "$baseUrl/api/v1/tasks/recording-batch".toHttpUrl().newBuilder()
+            .addQueryParameter("limit", limit.coerceIn(1, 20).toString())
+        if (excludeTextIds.isNotEmpty()) {
+            builder.addQueryParameter(
+                "exclude_text_ids",
+                excludeTextIds.distinct().take(100).joinToString(","),
             )
         }
+        val response = execute(authorizedBuilder(builder.build().toString()).get().build())
+        val array = response.optJSONArray("tasks")
+        val tasks = buildList {
+            if (array != null) {
+                for (index in 0 until array.length()) {
+                    parseTextTask(array.optJSONObject(index))?.let(::add)
+                }
+            }
+        }
+        seedRecordingTasks(settings.volunteerId, tasks)
+        tasks
+    }
 
     suspend fun volunteerStats(): VolunteerStats = withContext(Dispatchers.IO) {
         val stats = execute(
@@ -321,6 +346,27 @@ class ApiClient(private val settings: AppSettings) {
         )
     }
 
+    private fun cachedRecordingTask(excludeTextIds: List<Long>): TextTask? {
+        val excluded = excludeTextIds.toHashSet()
+        return synchronized(recordingTaskCacheLock) {
+            val cache = recordingTaskCache[settings.volunteerId] ?: return@synchronized null
+            val iterator = cache.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (entry.key in excluded) {
+                    iterator.remove()
+                    continue
+                }
+                // Peek instead of removing. Once the user saves this WAV,
+                // RecordingScreen calls again with the text id in excludeTextIds;
+                // that next call removes the consumed prompt. Exiting the screen
+                // without saving therefore keeps the same prompt available.
+                return@synchronized entry.value
+            }
+            null
+        }
+    }
+
     private fun solveRegistrationProof(nonce: String, difficulty: Int): Long {
         require(difficulty in 1..24) { "Invalid registration challenge" }
         val digest = MessageDigest.getInstance("SHA-256")
@@ -342,5 +388,23 @@ class ApiClient(private val settings: AppSettings) {
         if (remainingBits == 0) return true
         val mask = (0xff shl (8 - remainingBits)) and 0xff
         return (digest[wholeBytes].toInt() and 0xff and mask) == 0
+    }
+
+    companion object {
+        private val recordingTaskCacheLock = Any()
+        private val recordingTaskCache = mutableMapOf<String, LinkedHashMap<Long, TextTask>>()
+
+        /** Seeds process memory from LocalStore, or adds freshly prefetched tasks. */
+        fun seedRecordingTasks(volunteerId: String, tasks: List<TextTask>) {
+            if (volunteerId.isBlank() || tasks.isEmpty()) return
+            synchronized(recordingTaskCacheLock) {
+                val cache = recordingTaskCache.getOrPut(volunteerId) { LinkedHashMap() }
+                tasks.forEach { task -> cache[task.id] = task }
+                while (cache.size > RECORDING_TASK_CACHE_TARGET * 2) {
+                    val first = cache.entries.firstOrNull()?.key ?: break
+                    cache.remove(first)
+                }
+            }
+        }
     }
 }
