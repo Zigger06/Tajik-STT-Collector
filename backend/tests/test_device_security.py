@@ -14,7 +14,7 @@ from collector.security import (
     RateLimitError,
     RateRule,
 )
-from collector.service import CollectorService
+from collector.service import CollectorService, ForbiddenError
 
 
 def solve_pow(nonce: str, difficulty: int) -> str:
@@ -79,6 +79,42 @@ class DeviceSecurityTest(unittest.TestCase):
         self.assertEqual(repeated["region"], "Dushanbe")
         self.assertEqual(
             self.security.authenticate(volunteer_id, secret, "stats", "127.0.0.1"),
+            volunteer_id,
+        )
+
+    def test_revoked_profile_requires_explicit_fresh_proof_to_resume(self) -> None:
+        volunteer_id = str(uuid.uuid4())
+        secret = secrets.token_urlsafe(32)
+        self.register(volunteer_id, secret)
+        self.service.revoke_consent(volunteer_id)
+
+        with self.assertRaises(ForbiddenError):
+            self.security.register_volunteer(
+                volunteer_id=volunteer_id,
+                secret=secret,
+                display_name="Security tester",
+                consent=True,
+                ip="127.0.0.1",
+            )
+
+        challenge = self.security.issue_registration_challenge(
+            volunteer_id,
+            secret,
+            "127.0.0.1",
+        )
+        resumed = self.security.register_volunteer(
+            volunteer_id=volunteer_id,
+            secret=secret,
+            display_name="Security tester",
+            consent=True,
+            challenge_nonce=challenge["nonce"],
+            challenge_proof=solve_pow(challenge["nonce"], challenge["difficulty"]),
+            ip="127.0.0.1",
+        )
+        self.assertEqual(resumed["consent_active"], 1)
+        self.assertIsNone(resumed["revoked_at"])
+        self.assertEqual(
+            self.security.authenticate(volunteer_id, secret, "task", "127.0.0.1"),
             volunteer_id,
         )
 
