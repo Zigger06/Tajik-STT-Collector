@@ -13,6 +13,7 @@ import java.io.IOException
 import java.util.UUID
 
 const val RECORDING_BATCH_SIZE = 5
+const val RECORDING_TASK_CACHE_TARGET = 20
 
 class LocalStore(context: Context) {
     private val appContext = context.applicationContext
@@ -165,6 +166,88 @@ class LocalStore(context: Context) {
         }
     }
 
+    /**
+     * Persist server-approved prompts before the user enters the recording screen.
+     * They contain no audio or secret credentials, so recording can continue while
+     * the PC server or the phone network is temporarily unavailable.
+     */
+    fun cacheRecordingTasks(tasks: List<TextTask>) {
+        if (tasks.isEmpty()) return
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            for (task in tasks) {
+                val values = ContentValues().apply {
+                    put("id", task.id)
+                    put("content", task.content)
+                    put("source", task.source)
+                    put("current_recordings", task.currentRecordings)
+                    put("required_recordings", task.requiredRecordings)
+                }
+                db.insertWithOnConflict(
+                    "cached_recording_tasks",
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+            // Keep the disk cache deliberately small. Twenty prompts = four full
+            // five-recording batches that can be completed with no network.
+            db.execSQL(
+                """
+                DELETE FROM cached_recording_tasks
+                WHERE id NOT IN (
+                    SELECT id FROM cached_recording_tasks
+                    ORDER BY cached_at ASC, id ASC
+                    LIMIT $RECORDING_TASK_CACHE_TARGET
+                )
+                """.trimIndent(),
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun cachedRecordingTasks(): List<TextTask> {
+        val result = mutableListOf<TextTask>()
+        database.readableDatabase.query(
+            "cached_recording_tasks",
+            arrayOf("id", "content", "source", "current_recordings", "required_recordings"),
+            null,
+            null,
+            null,
+            null,
+            "cached_at ASC, id ASC",
+        ).use { cursor ->
+            val id = cursor.getColumnIndexOrThrow("id")
+            val content = cursor.getColumnIndexOrThrow("content")
+            val source = cursor.getColumnIndexOrThrow("source")
+            val current = cursor.getColumnIndexOrThrow("current_recordings")
+            val required = cursor.getColumnIndexOrThrow("required_recordings")
+            while (cursor.moveToNext()) {
+                result += TextTask(
+                    id = cursor.getLong(id),
+                    content = cursor.getString(content),
+                    source = cursor.getString(source),
+                    currentRecordings = cursor.getInt(current),
+                    requiredRecordings = cursor.getInt(required),
+                )
+            }
+        }
+        return result
+    }
+
+    fun cachedRecordingTaskIds(): List<Long> = cachedRecordingTasks().map { it.id }
+
+    fun cachedRecordingTaskCount(): Int = database.readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM cached_recording_tasks",
+        null,
+    ).use { cursor ->
+        cursor.moveToFirst()
+        cursor.getInt(0)
+    }
+
     /** Saves one recording and releases the whole local batch only when it reaches five. */
     fun addPending(recording: PendingRecording): Boolean {
         val db = database.writableDatabase
@@ -183,6 +266,13 @@ class LocalStore(context: Context) {
                 null,
                 values,
                 SQLiteDatabase.CONFLICT_REPLACE,
+            )
+            // Once a prompt produced a local WAV, never offer that cached prompt
+            // again after an app restart. The WAV itself stays in the local queue.
+            db.delete(
+                "cached_recording_tasks",
+                "id = ?",
+                arrayOf(recording.textId.toString()),
             )
             val staged = countWhere(db, "ready = 0")
             val batchReady = staged >= RECORDING_BATCH_SIZE
@@ -293,8 +383,25 @@ class LocalStore(context: Context) {
     }
 
     private class PendingDatabase(context: Context) :
-        SQLiteOpenHelper(context, "collector_local.db", null, 2) {
+        SQLiteOpenHelper(context, "collector_local.db", null, 3) {
         override fun onCreate(db: SQLiteDatabase) {
+            createPendingTable(db)
+            createRecordingTaskCacheTable(db)
+        }
+
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion < 2) {
+                // Recordings queued by v0.3.0 were already eligible for upload.
+                db.execSQL(
+                    "ALTER TABLE pending_recordings ADD COLUMN ready INTEGER NOT NULL DEFAULT 1",
+                )
+            }
+            if (oldVersion < 3) {
+                createRecordingTaskCacheTable(db)
+            }
+        }
+
+        private fun createPendingTable(db: SQLiteDatabase) {
             db.execSQL(
                 """
                 CREATE TABLE pending_recordings (
@@ -310,13 +417,19 @@ class LocalStore(context: Context) {
             )
         }
 
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            if (oldVersion < 2) {
-                // Recordings queued by v0.3.0 were already eligible for upload.
-                db.execSQL(
-                    "ALTER TABLE pending_recordings ADD COLUMN ready INTEGER NOT NULL DEFAULT 1",
+        private fun createRecordingTaskCacheTable(db: SQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS cached_recording_tasks (
+                    id INTEGER PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT '',
+                    current_recordings INTEGER NOT NULL DEFAULT 0,
+                    required_recordings INTEGER NOT NULL DEFAULT 5,
+                    cached_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
                 )
-            }
+                """.trimIndent(),
+            )
         }
     }
 }
