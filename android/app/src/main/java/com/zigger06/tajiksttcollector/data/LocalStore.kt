@@ -1,10 +1,15 @@
 package com.zigger06.tajiksttcollector.data
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 
 const val RECORDING_BATCH_SIZE = 5
@@ -62,6 +67,13 @@ class LocalStore(context: Context) {
         clearPendingRecordings()
     }
 
+    fun markParticipationResumed() {
+        preferences.edit()
+            .putBoolean("consent", true)
+            .putBoolean("participation_revoked", false)
+            .apply()
+    }
+
     fun cachedSubmittedCount(): Int = preferences.getInt("submitted_count", 0)
 
     fun saveSubmittedCount(count: Int) {
@@ -72,6 +84,85 @@ class LocalStore(context: Context) {
 
     fun saveDarkTheme(enabled: Boolean) {
         preferences.edit().putBoolean("dark_theme", enabled).apply()
+    }
+
+    fun keepLocalCopies(): Boolean = preferences.getBoolean("keep_local_copies", false)
+
+    fun saveKeepLocalCopies(enabled: Boolean) {
+        preferences.edit().putBoolean("keep_local_copies", enabled).apply()
+    }
+
+    /**
+     * Keeps a user-owned copy after a successful server upload.
+     *
+     * Android 10+ stores it in Downloads/Tajik-STT so it remains visible outside
+     * the app. Android 8/9 use app-specific external storage because public
+     * Downloads would otherwise require the legacy broad storage permission.
+     * This method is idempotent for WorkManager retries.
+     */
+    @Throws(IOException::class)
+    fun retainUploadedCopy(recording: PendingRecording) {
+        val source = File(recording.filePath)
+        if (!source.exists()) throw IOException("Local WAV file is missing")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            retainInDownloads(recording.id, source)
+        } else {
+            retainInAppExternalStorage(recording.id, source)
+        }
+    }
+
+    private fun retainInDownloads(recordingId: String, source: File) {
+        val resolver = appContext.contentResolver
+        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/Tajik-STT"
+        val displayName = "$recordingId.wav"
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE)
+        val selection =
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
+        val selectionArgs = arrayOf(displayName, relativePath)
+
+        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                val size = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE))
+                val existing = ContentUris.withAppendedId(collection, id)
+                if (size == source.length()) return
+                resolver.delete(existing, null, null)
+            }
+        }
+
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(collection, values)
+            ?: throw IOException("Could not create a local WAV copy")
+        try {
+            val output = resolver.openOutputStream(uri, "w")
+                ?: throw IOException("Could not open the local WAV copy")
+            output.use { destination -> source.inputStream().use { it.copyTo(destination) } }
+            val ready = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            resolver.update(uri, ready, null, null)
+        } catch (error: Exception) {
+            resolver.delete(uri, null, null)
+            if (error is IOException) throw error
+            throw IOException("Could not save the local WAV copy", error)
+        }
+    }
+
+    private fun retainInAppExternalStorage(recordingId: String, source: File) {
+        val root = appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            ?: File(appContext.filesDir, "saved_recordings")
+        val directory = File(root, "Tajik-STT").apply { mkdirs() }
+        val target = File(directory, "$recordingId.wav")
+        if (target.exists() && target.length() == source.length()) return
+        source.copyTo(target, overwrite = true)
+        if (!target.exists() || target.length() != source.length()) {
+            target.delete()
+            throw IOException("Could not verify the local WAV copy")
+        }
     }
 
     /** Saves one recording and releases the whole local batch only when it reaches five. */
