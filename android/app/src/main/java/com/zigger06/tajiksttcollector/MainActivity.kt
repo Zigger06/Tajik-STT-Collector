@@ -8,10 +8,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material3.AlertDialog
@@ -19,10 +22,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -92,7 +97,7 @@ class MainActivity : ComponentActivity() {
 
             BackHandler(enabled = showMyData) {
                 // My Data is a normal in-app screen, including after consent is
-                // withdrawn. System Back must never dump the user out of the app.
+                // withdrawn. System Back returns to the active or paused home.
                 showMyData = false
             }
 
@@ -104,101 +109,119 @@ class MainActivity : ComponentActivity() {
             }
             TajikCollectorTheme(darkTheme = darkTheme) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (showMyData) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Box(modifier = Modifier.weight(1f)) {
-                                MyDataScreen(
-                                    store = store,
-                                    onBack = { showMyData = false },
-                                    onParticipationRevoked = {
-                                        participationRevoked = true
-                                        showMyData = true
-                                    },
-                                )
-                            }
-
-                            OutlinedCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .navigationBarsPadding()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                "Нусхаи маҳаллӣ",
-                                                fontWeight = FontWeight.Bold,
-                                            )
-                                            Text(
-                                                "Пас аз фиристодан нусхаи WAV-ро дар телефон нигоҳ доред.",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        Switch(
-                                            checked = keepLocalCopies,
-                                            onCheckedChange = { enabled ->
-                                                store.saveKeepLocalCopies(enabled)
-                                                keepLocalCopies = enabled
-                                            },
-                                        )
-                                    }
-                                    Text(
-                                        "То фиристодан ҳамаи сабтҳо ба ҳар ҳол дар ҷузвдони хусусии барнома " +
-                                            "маҳаллӣ мемонанд. Ин гузариш танҳо нусхаи баъди фиристоданро нигоҳ медорад. " +
-                                            "Дар Android 10+ нусхаҳо дар Downloads/Tajik-STT пайдо мешаванд. " +
-                                            "Хомӯш кардани гузариш нусхаҳои қаблан нигоҳдоштаро худкор ҳазф намекунад.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    when {
+                        showMyData -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    MyDataScreen(
+                                        store = store,
+                                        onBack = { showMyData = false },
+                                        onParticipationRevoked = {
+                                            participationRevoked = true
+                                            showMyData = true
+                                        },
                                     )
+                                }
 
-                                    if (participationRevoked) {
-                                        Button(
-                                            onClick = { confirmResume = true },
+                                OutlinedCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .navigationBarsPadding()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Row(
                                             modifier = Modifier.fillMaxWidth(),
-                                            enabled = !resumeBusy,
+                                            verticalAlignment = Alignment.CenterVertically,
                                         ) {
-                                            Text("Иштирокро аз нав оғоз кардан")
-                                        }
-                                        if (resumeError.isNotBlank()) {
-                                            Text(
-                                                resumeError,
-                                                color = MaterialTheme.colorScheme.error,
-                                                style = MaterialTheme.typography.bodySmall,
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    "Нусхаи маҳаллӣ",
+                                                    fontWeight = FontWeight.Bold,
+                                                )
+                                                Text(
+                                                    "Пас аз фиристодан нусхаи WAV-ро дар телефон нигоҳ доред.",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                            Switch(
+                                                checked = keepLocalCopies,
+                                                onCheckedChange = { enabled ->
+                                                    store.saveKeepLocalCopies(enabled)
+                                                    keepLocalCopies = enabled
+                                                },
                                             )
+                                        }
+                                        Text(
+                                            "То фиристодан ҳамаи сабтҳо ба ҳар ҳол дар ҷузвдони хусусии барнома " +
+                                                "маҳаллӣ мемонанд. Ин гузариш танҳо нусхаи баъди фиристоданро нигоҳ медорад. " +
+                                                "Дар Android 10+ нусхаҳо дар Downloads/Tajik-STT пайдо мешаванд. " +
+                                                "Хомӯш кардани гузариш нусхаҳои қаблан нигоҳдоштаро худкор ҳазф намекунад.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+
+                                        if (participationRevoked) {
+                                            Button(
+                                                onClick = { confirmResume = true },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                enabled = !resumeBusy,
+                                            ) {
+                                                Text("Иштирокро аз нав оғоз кардан")
+                                            }
+                                            if (resumeError.isNotBlank()) {
+                                                Text(
+                                                    resumeError,
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    } else {
-                        key(credentialBootstrapEpoch) {
-                            CollectorApp(
-                                store = store,
+
+                        participationRevoked -> {
+                            ParticipationPausedScreen(
                                 darkTheme = darkTheme,
+                                resumeBusy = resumeBusy,
+                                resumeError = resumeError,
                                 onDarkThemeChange = { enabled ->
                                     store.saveDarkTheme(enabled)
                                     darkTheme = enabled
                                 },
+                                onMyData = { showMyData = true },
+                                onResume = { confirmResume = true },
                             )
                         }
-                        ExtendedFloatingActionButton(
-                            onClick = { showMyData = true },
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(end = 18.dp, bottom = 22.dp),
-                            icon = {
-                                Icon(Icons.Default.PrivacyTip, contentDescription = null)
-                            },
-                            text = { Text("Маълумоти ман") },
-                        )
+
+                        else -> {
+                            key(credentialBootstrapEpoch) {
+                                CollectorApp(
+                                    store = store,
+                                    darkTheme = darkTheme,
+                                    onDarkThemeChange = { enabled ->
+                                        store.saveDarkTheme(enabled)
+                                        darkTheme = enabled
+                                    },
+                                )
+                            }
+                            ExtendedFloatingActionButton(
+                                onClick = { showMyData = true },
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(end = 18.dp, bottom = 22.dp),
+                                icon = {
+                                    Icon(Icons.Default.PrivacyTip, contentDescription = null)
+                                },
+                                text = { Text("Маълумоти ман") },
+                            )
+                        }
                     }
                 }
 
@@ -253,6 +276,68 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ParticipationPausedScreen(
+    darkTheme: Boolean,
+    resumeBusy: Boolean,
+    resumeError: String,
+    onDarkThemeChange: (Boolean) -> Unit,
+    onMyData: () -> Unit,
+    onResume: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(22.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            "Иштирок боздошта шудааст",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Black,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Сабт, иловаи матн ва санҷиш то вақте ки шумо розигиро дубора фаъол накунед, " +
+                "фиристода намешаванд. Маълумоти мавҷудаи худро ҳамеша идора карда метавонед.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(22.dp))
+        Button(
+            onClick = onResume,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !resumeBusy,
+        ) {
+            Text("Иштирокро аз нав оғоз кардан")
+        }
+        OutlinedButton(
+            onClick = onMyData,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !resumeBusy,
+        ) {
+            Text("Маълумоти ман")
+        }
+        Spacer(Modifier.height(18.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Мавзӯи торик", modifier = Modifier.weight(1f))
+            Switch(checked = darkTheme, onCheckedChange = onDarkThemeChange)
+        }
+        if (resumeError.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                resumeError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
