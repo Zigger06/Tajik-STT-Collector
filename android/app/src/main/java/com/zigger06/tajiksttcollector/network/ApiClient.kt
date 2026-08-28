@@ -357,10 +357,8 @@ class ApiClient(private val settings: AppSettings) {
                     iterator.remove()
                     continue
                 }
-                // Peek instead of removing. Once the user saves this WAV,
-                // RecordingScreen calls again with the text id in excludeTextIds;
-                // that next call removes the consumed prompt. Exiting the screen
-                // without saving therefore keeps the same prompt available.
+                // Peek instead of removing. Saving the WAV explicitly discards this
+                // task from memory; exiting without saving keeps it available.
                 return@synchronized entry.value
             }
             null
@@ -404,6 +402,15 @@ class ApiClient(private val settings: AppSettings) {
                     val first = cache.entries.firstOrNull()?.key ?: break
                     cache.remove(first)
                 }
+            }
+        }
+
+        /** Remove a prompt immediately after its WAV is accepted into the local queue. */
+        fun discardRecordingTask(volunteerId: String, textId: Long) {
+            synchronized(recordingTaskCacheLock) {
+                val cache = recordingTaskCache[volunteerId] ?: return
+                cache.remove(textId)
+                if (cache.isEmpty()) recordingTaskCache.remove(volunteerId)
             }
         }
     }

@@ -65,7 +65,10 @@ class LocalStore(context: Context) {
             .putBoolean("consent", false)
             .putBoolean("participation_revoked", true)
             .apply()
-        clearPendingRecordings()
+        // Do NOT delete unsubmitted WAVs here. Withdrawal stops all background
+        // upload, but the volunteer still owns the local queue. The files remain
+        // on the phone until the user explicitly deletes them or deliberately
+        // resumes participation, at which point complete batches may upload.
     }
 
     fun markParticipationResumed() {
@@ -75,10 +78,27 @@ class LocalStore(context: Context) {
             .apply()
     }
 
-    fun cachedSubmittedCount(): Int = preferences.getInt("submitted_count", 0)
+    fun cachedVolunteerStats(): VolunteerStats = VolunteerStats(
+        submitted = preferences.getInt("submitted_count", 0),
+        pendingReview = preferences.getInt("pending_review_count", 0),
+        approved = preferences.getInt("approved_count", 0),
+        rejected = preferences.getInt("rejected_count", 0),
+    )
+
+    fun saveVolunteerStats(stats: VolunteerStats) {
+        preferences.edit()
+            .putInt("submitted_count", stats.submitted.coerceAtLeast(0))
+            .putInt("pending_review_count", stats.pendingReview.coerceAtLeast(0))
+            .putInt("approved_count", stats.approved.coerceAtLeast(0))
+            .putInt("rejected_count", stats.rejected.coerceAtLeast(0))
+            .apply()
+    }
+
+    fun cachedSubmittedCount(): Int = cachedVolunteerStats().submitted
 
     fun saveSubmittedCount(count: Int) {
-        preferences.edit().putInt("submitted_count", count.coerceAtLeast(0)).apply()
+        val current = cachedVolunteerStats()
+        saveVolunteerStats(current.copy(submitted = count.coerceAtLeast(0)))
     }
 
     fun isDarkTheme(): Boolean = preferences.getBoolean("dark_theme", false)

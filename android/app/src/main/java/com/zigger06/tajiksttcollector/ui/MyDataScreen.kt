@@ -3,7 +3,6 @@ package com.zigger06.tajiksttcollector.ui
 import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,12 +22,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,6 +83,8 @@ fun MyDataScreen(
     var recordingToDelete by remember { mutableStateOf<OwnRecording?>(null) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var confirmRevoke by remember { mutableStateOf(false) }
+    var showLocalCopyInfo by remember { mutableStateOf(false) }
+    var keepLocalCopies by remember { mutableStateOf(store.keepLocalCopies()) }
     var pendingDownloadId by remember { mutableStateOf<String?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var playingId by remember { mutableStateOf<String?>(null) }
@@ -112,7 +116,7 @@ fun MyDataScreen(
                 onParticipationRevoked()
             }
         } catch (exception: Exception) {
-            error = exception.message ?: "Маълумот гирифта нашуд."
+            error = userFacingError(exception, "Маълумот гирифта нашуд. Баъдтар дубора кӯшиш кунед.")
         } finally {
             loading = false
         }
@@ -129,11 +133,11 @@ fun MyDataScreen(
                 error = ""
                 try {
                     val output = context.contentResolver.openOutputStream(uri)
-                        ?: throw IOException("Файл барои навиштан кушода нашуд.")
+                        ?: throw IOException("output unavailable")
                     output.use { ApiClient(settings).downloadOwnRecordingTo(recordingId, it) }
                     message = "Сабт ба дастгоҳи шумо боргирӣ шуд."
                 } catch (exception: Exception) {
-                    error = exception.message ?: "Сабт боргирӣ нашуд."
+                    error = userFacingError(exception, "Сабт боргирӣ нашуд.")
                 } finally {
                     busy = false
                 }
@@ -150,11 +154,11 @@ fun MyDataScreen(
                 error = ""
                 try {
                     val output = context.contentResolver.openOutputStream(uri)
-                        ?: throw IOException("Файл барои навиштан кушода нашуд.")
+                        ?: throw IOException("output unavailable")
                     output.use { ApiClient(settings).downloadOwnArchiveTo(it) }
                     message = "Ҳамаи сабтҳои дастрас боргирӣ шуданд."
                 } catch (exception: Exception) {
-                    error = exception.message ?: "Бойгонӣ боргирӣ нашуд."
+                    error = userFacingError(exception, "Бойгонӣ боргирӣ нашуд.")
                 } finally {
                     busy = false
                 }
@@ -219,6 +223,39 @@ fun MyDataScreen(
                         "омӯзиши анҷомёфтаро худкор барнамегардонад.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        OutlinedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Нусхаи маҳаллӣ", fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        "Пас аз фиристодани сабти овоз, нусха дар телефон нигоҳ дошта мешавад.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = { showLocalCopyInfo = true }) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = "Маълумоти бештар",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Switch(
+                    checked = keepLocalCopies,
+                    onCheckedChange = { enabled ->
+                        store.saveKeepLocalCopies(enabled)
+                        keepLocalCopies = enabled
+                    },
                 )
             }
         }
@@ -309,7 +346,7 @@ fun MyDataScreen(
                                         playingId = recording.id
                                     } catch (exception: Exception) {
                                         cacheFile.delete()
-                                        error = exception.message ?: "Аудио гирифта нашуд."
+                                        error = userFacingError(exception, "Аудио гирифта нашуд.")
                                     } finally {
                                         busy = false
                                     }
@@ -346,39 +383,62 @@ fun MyDataScreen(
             Text("Боргирии ҳамаи сабтҳо")
         }
 
-        OutlinedButton(
+        Button(
             onClick = { confirmDeleteAll = true },
             modifier = Modifier.fillMaxWidth(),
             enabled = (recordings.isNotEmpty() || store.pendingCount() > 0) && !busy,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
         ) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error,
-            )
+            Icon(Icons.Default.Delete, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("Ҳазфи ҳамаи сабтҳои ман", color = MaterialTheme.colorScheme.error)
+            Text("Ҳазфи ҳамаи сабтҳои ман")
         }
 
         if (consentActive && !settings.participationRevoked) {
             Text(
                 "Бозпас гирифтани розигӣ фиристодан ва истифодаи ояндаи сабтҳои шуморо қатъ мекунад. " +
-                    "Сабтҳои аслӣ то вақте ки шумо онҳоро ҳазф накунед, барои идора ва боргирӣ нигоҳ дошта мешаванд " +
-                    "ва ба экспортҳои нави омӯзишӣ дохил намешаванд.",
+                    "Сабтҳои серверӣ то вақте ки шумо онҳоро ҳазф накунед, барои идора ва боргирӣ нигоҳ дошта мешаванд. " +
+                    "Сабтҳои ҳанӯз нафиристода дар ҳамин телефон мемонанд ва то аз нав оғоз кардани иштирок фиристода намешаванд.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(
+            Button(
                 onClick = { confirmRevoke = true },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !busy,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
             ) {
-                Text("Бозпас гирифтани розигӣ", color = MaterialTheme.colorScheme.error)
+                Icon(Icons.Default.PrivacyTip, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Бозпас гирифтани розигӣ")
             }
         }
 
         Spacer(Modifier.height(20.dp))
+    }
+
+    if (showLocalCopyInfo) {
+        AlertDialog(
+            onDismissRequest = { showLocalCopyInfo = false },
+            title = { Text("Нусхаи маҳаллӣ") },
+            text = {
+                Text(
+                    "То фиристодан ҳамаи сабтҳо ба ҳар ҳол дар ҷузвдони хусусии барнома дар телефон нигоҳ дошта мешаванд. " +
+                        "Ин гузариш танҳо муайян мекунад, ки баъд аз фиристодани муваффақ нусхаи WAV боқӣ монад ё не. " +
+                        "Дар Android 10+ нусхаҳои нигоҳдошта дар Downloads/Tajik-STT пайдо мешаванд. " +
+                        "Хомӯш кардани гузариш нусхаҳои қаблан нигоҳдоштаро худкор ҳазф намекунад.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showLocalCopyInfo = false }) { Text("Фаҳмо") }
+            },
+        )
     }
 
     recordingToDelete?.let { recording ->
@@ -403,7 +463,7 @@ fun MyDataScreen(
                                 message = "Сабт ҳазф шуд."
                                 refreshData(showSpinner = false)
                             } catch (exception: Exception) {
-                                error = exception.message ?: "Сабт ҳазф нашуд."
+                                error = userFacingError(exception, "Сабт ҳазф нашуд.")
                             } finally {
                                 busy = false
                             }
@@ -441,7 +501,7 @@ fun MyDataScreen(
                                 message = "Сабтҳо ҳазф шуданд: сервер $deleted, телефон $localDeleted."
                                 refreshData(showSpinner = false)
                             } catch (exception: Exception) {
-                                error = exception.message ?: "Сабтҳо ҳазф нашуданд."
+                                error = userFacingError(exception, "Сабтҳо ҳазф нашуданд.")
                             } finally {
                                 busy = false
                             }
@@ -462,7 +522,8 @@ fun MyDataScreen(
             text = {
                 Text(
                     "Пас аз ин барнома дигар сабт, матн ё санҷиши нав намефиристад. " +
-                        "Сабтҳои мавҷударо метавонед баъдан аз ҳамин бахш боргирӣ ё ҳазф кунед.",
+                        "Сабтҳои ҳанӯз нафиристода аз телефон ҳазф намешаванд ва то аз нав оғоз кардани иштирок фиристода намешаванд. " +
+                        "Сабтҳои сервериро метавонед баъдан аз ҳамин бахш боргирӣ ё ҳазф кунед.",
                 )
             },
             confirmButton = {
@@ -480,9 +541,8 @@ fun MyDataScreen(
                                 confirmRevoke = false
                                 message = "Розигӣ бозпас гирифта шуд. Иштироки нав қатъ гардид."
                                 onParticipationRevoked()
-                                refreshData(showSpinner = false)
                             } catch (exception: Exception) {
-                                error = exception.message ?: "Розигӣ бозпас гирифта нашуд."
+                                error = userFacingError(exception, "Розигӣ бозпас гирифта нашуд.")
                             } finally {
                                 busy = false
                             }

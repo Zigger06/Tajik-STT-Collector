@@ -21,21 +21,36 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         if (!settings.isConfigured) return Result.failure()
         val api = ApiClient(settings)
         return try {
-            api.registerVolunteer()
-            // A complete five-recording batch is already local before this loop.
-            // Network speed therefore never blocks the user's Save button: this
-            // worker uploads the ready files later when Android reports connectivity.
+            // Setup/migration already registers the credential. Re-registering before
+            // every five-file upload was wasting the strict anti-Sybil registration
+            // budget and could lock a legitimate volunteer out after normal testing.
             for (recording in store.pendingRecordings()) {
-                api.uploadRecording(recording)
+                try {
+                    api.uploadRecording(recording)
+                } catch (error: ApiException) {
+                    if (!isAlreadyRecordedText(error)) throw error
+                    // Recovery for a stale prompt from older clients: the server already
+                    // has this volunteer's voice for the text, so this redundant WAV can
+                    // never be accepted. Do not let one stale item block the whole queue.
+                    if (store.keepLocalCopies()) {
+                        store.retainUploadedCopy(recording)
+                    }
+                    store.removePending(recording.id)
+                    ApiClient.discardRecordingTask(settings.volunteerId, recording.textId)
+                    File(recording.filePath).delete()
+                    continue
+                }
+
                 if (store.keepLocalCopies()) {
                     // The server upload is idempotent, so a failed local-copy write
                     // can safely retry without duplicating the server recording.
                     store.retainUploadedCopy(recording)
                 }
                 store.removePending(recording.id)
+                ApiClient.discardRecordingTask(settings.volunteerId, recording.textId)
                 File(recording.filePath).delete()
             }
-            store.saveSubmittedCount(api.volunteerStats().submitted)
+            store.saveVolunteerStats(api.volunteerStats())
 
             // Refill the prompt cache while the network is already available.
             // Failure here must never roll back or retry successfully uploaded WAVs.
@@ -61,6 +76,10 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             Result.retry()
         }
     }
+
+    private fun isAlreadyRecordedText(error: ApiException): Boolean =
+        error.statusCode == 409 &&
+            error.message.orEmpty().contains("already recorded this text", ignoreCase = true)
 
     companion object {
         private const val UNIQUE_UPLOAD_WORK = "tajik-stt-upload"
