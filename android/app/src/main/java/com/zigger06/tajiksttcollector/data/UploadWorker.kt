@@ -22,6 +22,9 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val api = ApiClient(settings)
         return try {
             api.registerVolunteer()
+            // A complete five-recording batch is already local before this loop.
+            // Network speed therefore never blocks the user's Save button: this
+            // worker uploads the ready files later when Android reports connectivity.
             for (recording in store.pendingRecordings()) {
                 api.uploadRecording(recording)
                 if (store.keepLocalCopies()) {
@@ -33,6 +36,24 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 File(recording.filePath).delete()
             }
             store.saveSubmittedCount(api.volunteerStats().submitted)
+
+            // Refill the prompt cache while the network is already available.
+            // Failure here must never roll back or retry successfully uploaded WAVs.
+            try {
+                val missing = (
+                    RECORDING_TASK_CACHE_TARGET - store.cachedRecordingTaskCount()
+                ).coerceAtLeast(0)
+                if (missing > 0) {
+                    val excluded = (
+                        store.pendingTextIds() + store.cachedRecordingTaskIds()
+                    ).distinct()
+                    val fresh = api.recordingTasks(missing, excluded)
+                    store.cacheRecordingTasks(fresh)
+                    ApiClient.seedRecordingTasks(settings.volunteerId, store.cachedRecordingTasks())
+                }
+            } catch (_: Exception) {
+                // Best-effort cache refill. The next app start or upload retries it.
+            }
             Result.success()
         } catch (error: ApiException) {
             if (error.statusCode == 429 || error.statusCode >= 500) Result.retry() else Result.failure()
@@ -53,7 +74,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
                 UNIQUE_UPLOAD_WORK,
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                ExistingWorkPolicy.KEEP,
                 request,
             )
         }

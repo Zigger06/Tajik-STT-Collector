@@ -75,6 +75,28 @@ class ReviewMediaGrantStore:
             )
             return token
 
+    def peek(self, token: str, recording_id: str) -> ReviewMediaGrant | None:
+        """Validate a capability without spending a full-download use.
+
+        Android MediaPlayer commonly probes/streams one playback with HTTP Range
+        requests. Those byte-range requests are parts of the same download and
+        must not burn the tiny full-download budget one request at a time.
+        """
+        if not token:
+            return None
+        now = self.clock()
+        with self._lock:
+            self._purge_locked(now)
+            grant = self._items.get(token)
+            if grant is None or grant.recording_id != recording_id:
+                return None
+            return ReviewMediaGrant(
+                recording_id=grant.recording_id,
+                reviewer_id=grant.reviewer_id,
+                expires_at=grant.expires_at,
+                remaining_uses=grant.remaining_uses,
+            )
+
     def consume(self, token: str, recording_id: str) -> ReviewMediaGrant | None:
         if not token:
             return None
@@ -188,23 +210,46 @@ def make_handler(
                 if parsed.path.startswith("/media/") and parsed.path.endswith(".wav"):
                     recording_id = parsed.path.removeprefix("/media/").removesuffix(".wav")
                     token = query.get("review_token", [""])[0]
-                    grant = grants.consume(token, recording_id)
+                    is_range_request = bool(self.headers.get("Range", "").strip())
+                    grant = (
+                        grants.peek(token, recording_id)
+                        if is_range_request
+                        else grants.consume(token, recording_id)
+                    )
                     if grant is None:
                         raise _RouteNotFound()
                     self._serve_file(
                         self._review_media_path(recording_id, grant.reviewer_id),
                         "audio/wav",
+                        allow_ranges=True,
                     )
                     return
 
-                if parsed.path == "/api/v1/tasks/recording":
+                if parsed.path in (
+                    "/api/v1/tasks/recording",
+                    "/api/v1/tasks/recording-batch",
+                ):
                     volunteer_id = self._authenticated_volunteer("task")
                     excluded = query.get("exclude_text_ids", [""])[0]
                     excluded_text_ids = [
                         int(value) for value in excluded.split(",") if value.strip()
-                    ]
-                    task = service.get_recording_task(volunteer_id, excluded_text_ids)
-                    self._send_json({"task": task})
+                    ][:100]
+                    if parsed.path == "/api/v1/tasks/recording-batch":
+                        limit = int(query.get("limit", ["10"])[0])
+                        if not 1 <= limit <= 20:
+                            raise CollectorError("limit must be between 1 and 20")
+                        tasks: list[dict] = []
+                        selected = list(excluded_text_ids)
+                        for _ in range(limit):
+                            task = service.get_recording_task(volunteer_id, selected)
+                            if task is None:
+                                break
+                            tasks.append(task)
+                            selected.append(int(task["id"]))
+                        self._send_json({"tasks": tasks})
+                    else:
+                        task = service.get_recording_task(volunteer_id, excluded_text_ids)
+                        self._send_json({"task": task})
                 elif parsed.path == "/api/v1/volunteers/stats":
                     volunteer_id = self._authenticated_volunteer("stats")
                     self._send_json(service.volunteer_stats(volunteer_id))
@@ -231,6 +276,31 @@ def make_handler(
             except ValueError:
                 self._send_error(HTTPStatus.BAD_REQUEST, "numeric parameter is invalid")
             except Exception:  # pragma: no cover - last-resort server protection
+                traceback.print_exc()
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            """Serve reviewer media metadata without spending a download use."""
+            try:
+                parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+                if parsed.path.startswith("/media/") and parsed.path.endswith(".wav"):
+                    recording_id = parsed.path.removeprefix("/media/").removesuffix(".wav")
+                    token = query.get("review_token", [""])[0]
+                    grant = grants.peek(token, recording_id)
+                    if grant is None:
+                        raise _RouteNotFound()
+                    self._serve_file(
+                        self._review_media_path(recording_id, grant.reviewer_id),
+                        "audio/wav",
+                        allow_ranges=True,
+                        head_only=True,
+                    )
+                    return
+                self._send_error(HTTPStatus.NOT_FOUND, "route not found")
+            except CollectorError as exc:
+                self._send_error(exc.status_code, str(exc))
+            except Exception:  # pragma: no cover
                 traceback.print_exc()
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
@@ -522,24 +592,89 @@ def make_handler(
                 return
             self._serve_file(admin_path, "text/html; charset=utf-8")
 
-        def _serve_file(self, path: Path, content_type: str | None = None) -> None:
+        def _serve_file(
+            self,
+            path: Path,
+            content_type: str | None = None,
+            *,
+            allow_ranges: bool = False,
+            head_only: bool = False,
+        ) -> None:
             try:
-                data = path.read_bytes()
+                size = path.stat().st_size
             except OSError:
                 self._send_error(HTTPStatus.NOT_FOUND, "file not found")
                 return
-            self.send_response(HTTPStatus.OK)
+
+            start = 0
+            end = max(0, size - 1)
+            status = HTTPStatus.OK
+            range_header = self.headers.get("Range", "").strip() if allow_ranges else ""
+            if range_header:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+                if match is None or (not match.group(1) and not match.group(2)):
+                    self._send_range_not_satisfiable(size)
+                    return
+                start_text, end_text = match.groups()
+                try:
+                    if start_text:
+                        start = int(start_text)
+                        end = int(end_text) if end_text else size - 1
+                    else:
+                        suffix_length = int(end_text)
+                        if suffix_length <= 0:
+                            raise ValueError
+                        start = max(0, size - suffix_length)
+                        end = size - 1
+                except ValueError:
+                    self._send_range_not_satisfiable(size)
+                    return
+                end = min(end, size - 1)
+                if size <= 0 or start < 0 or start >= size or end < start:
+                    self._send_range_not_satisfiable(size)
+                    return
+                status = HTTPStatus.PARTIAL_CONTENT
+
+            length = 0 if size <= 0 else end - start + 1
+            self.send_response(status)
             self.send_header(
                 "Content-Type",
                 content_type
                 or mimetypes.guess_type(path.name)[0]
                 or "application/octet-stream",
             )
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Length", str(length))
+            if allow_ranges:
+                self.send_header("Accept-Ranges", "bytes")
+            if status == HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Cache-Control", "no-store")
             self._send_security_headers()
             self.end_headers()
-            self.wfile.write(data)
+            if head_only or length <= 0:
+                return
+
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = handle.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except OSError:
+                # Headers may already be sent; terminate this response quietly.
+                return
+
+        def _send_range_not_satisfiable(self, size: int) -> None:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
+            self.end_headers()
 
         def _send_json(self, value: object, status: int = HTTPStatus.OK) -> None:
             data = json.dumps(value, ensure_ascii=False).encode("utf-8")
