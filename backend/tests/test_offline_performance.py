@@ -72,7 +72,7 @@ class OfflinePerformanceContractTest(unittest.TestCase):
         self.assertIn("cached_recording_tasks", local_store)
         self.assertIn("fun cacheRecordingTasks", local_store)
         self.assertIn("db.delete(\n                \"cached_recording_tasks\"", local_store)
-        self.assertIn('"/api/v1/tasks/recording-batch"', api)
+        self.assertIn("/api/v1/tasks/recording-batch", api)
         self.assertIn("cachedRecordingTask(excludeTextIds)?.let", api)
         self.assertIn("fun seedRecordingTasks", api)
         self.assertIn("store.cachedRecordingTasks()", activity)
