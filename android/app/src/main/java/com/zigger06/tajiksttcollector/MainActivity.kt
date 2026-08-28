@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +16,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -23,7 +27,6 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +52,7 @@ import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.ui.CollectorApp
 import com.zigger06.tajiksttcollector.ui.MyDataScreen
 import com.zigger06.tajiksttcollector.ui.theme.TajikCollectorTheme
+import com.zigger06.tajiksttcollector.ui.userFacingError
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -67,8 +71,7 @@ class MainActivity : ComponentActivity() {
             var participationRevoked by remember {
                 mutableStateOf(initialSettings.participationRevoked)
             }
-            var showMyData by remember { mutableStateOf(participationRevoked) }
-            var keepLocalCopies by remember { mutableStateOf(store.keepLocalCopies()) }
+            var showMyData by remember { mutableStateOf(false) }
             var confirmResume by remember { mutableStateOf(false) }
             var resumeBusy by remember { mutableStateOf(false) }
             var resumeError by remember { mutableStateOf("") }
@@ -90,8 +93,6 @@ class MainActivity : ComponentActivity() {
                     try {
                         ApiClient(initialSettings).registerVolunteer()
                         migrationPreferences.edit().putBoolean(migrationKey, true).apply()
-                        // Recreate CollectorApp so a stats request that raced with the
-                        // one-time bootstrap is retried using the now-bound credential.
                         credentialBootstrapEpoch++
                     } catch (_: Exception) {
                         // Preserve offline-first behavior. Do not mark success; the
@@ -125,8 +126,6 @@ class MainActivity : ComponentActivity() {
             }
 
             BackHandler(enabled = showMyData) {
-                // My Data is a normal in-app screen, including after consent is
-                // withdrawn. System Back returns to the active or paused home.
                 showMyData = false
             }
 
@@ -136,83 +135,23 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !darkTheme
                 }
             }
+
             TajikCollectorTheme(darkTheme = darkTheme) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                ) {
                     when {
                         showMyData -> {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                Box(modifier = Modifier.weight(1f)) {
-                                    MyDataScreen(
-                                        store = store,
-                                        onBack = { showMyData = false },
-                                        onParticipationRevoked = {
-                                            participationRevoked = true
-                                            showMyData = true
-                                        },
-                                    )
-                                }
-
-                                OutlinedCard(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .navigationBarsPadding()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    "Нусхаи маҳаллӣ",
-                                                    fontWeight = FontWeight.Bold,
-                                                )
-                                                Text(
-                                                    "Пас аз фиристодан нусхаи WAV-ро дар телефон нигоҳ доред.",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                            Switch(
-                                                checked = keepLocalCopies,
-                                                onCheckedChange = { enabled ->
-                                                    store.saveKeepLocalCopies(enabled)
-                                                    keepLocalCopies = enabled
-                                                },
-                                            )
-                                        }
-                                        Text(
-                                            "То фиристодан ҳамаи сабтҳо ба ҳар ҳол дар ҷузвдони хусусии барнома " +
-                                                "маҳаллӣ мемонанд. Ин гузариш танҳо нусхаи баъди фиристоданро нигоҳ медорад. " +
-                                                "Дар Android 10+ нусхаҳо дар Downloads/Tajik-STT пайдо мешаванд. " +
-                                                "Хомӯш кардани гузариш нусхаҳои қаблан нигоҳдоштаро худкор ҳазф намекунад.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-
-                                        if (participationRevoked) {
-                                            Button(
-                                                onClick = { confirmResume = true },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                enabled = !resumeBusy,
-                                            ) {
-                                                Text("Иштирокро аз нав оғоз кардан")
-                                            }
-                                            if (resumeError.isNotBlank()) {
-                                                Text(
-                                                    resumeError,
-                                                    color = MaterialTheme.colorScheme.error,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            MyDataScreen(
+                                store = store,
+                                onBack = { showMyData = false },
+                                onParticipationRevoked = {
+                                    participationRevoked = true
+                                    showMyData = false
+                                },
+                            )
                         }
 
                         participationRevoked -> {
@@ -244,7 +183,8 @@ class MainActivity : ComponentActivity() {
                                 onClick = { showMyData = true },
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .padding(end = 18.dp, bottom = 22.dp),
+                                    .navigationBarsPadding()
+                                    .padding(end = 18.dp, bottom = 14.dp),
                                 icon = {
                                     Icon(Icons.Default.PrivacyTip, contentDescription = null)
                                 },
@@ -262,8 +202,8 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 "Ин амал розигии шуморо дубора фаъол мекунад. Сабтҳои серверие, ки " +
                                     "пас аз боздошт ҳанӯз ҳазф нашудаанд, боз метавонанд барои санҷиш ва " +
-                                    "экспортҳои ояндаи Tajik-STT истифода шаванд. Агар инро намехоҳед, " +
-                                    "он сабтҳоро пеш аз идома ҳазф кунед.",
+                                    "экспортҳои ояндаи Tajik-STT истифода шаванд. Сабтҳои ҳанӯз " +
+                                    "нафиристодаи телефон низ баъд аз идома метавонанд дар замина фиристода шаванд.",
                             )
                         },
                         confirmButton = {
@@ -286,8 +226,10 @@ class MainActivity : ComponentActivity() {
                                             UploadWorker.schedule(applicationContext)
                                             showMyData = false
                                         } catch (error: Exception) {
-                                            resumeError = error.message
-                                                ?: "Иштирок аз нав оғоз нашуд."
+                                            resumeError = userFacingError(
+                                                error,
+                                                "Иштирок аз нав оғоз нашуд.",
+                                            )
                                             confirmResume = false
                                         } finally {
                                             resumeBusy = false
@@ -321,6 +263,7 @@ private fun ParticipationPausedScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(22.dp),
@@ -334,7 +277,8 @@ private fun ParticipationPausedScreen(
         Spacer(Modifier.height(10.dp))
         Text(
             "Сабт, иловаи матн ва санҷиш то вақте ки шумо розигиро дубора фаъол накунед, " +
-                "фиристода намешаванд. Маълумоти мавҷудаи худро ҳамеша идора карда метавонед.",
+                "фиристода намешаванд. Сабтҳои ҳанӯз нафиристода дар телефон нигоҳ дошта мешаванд. " +
+                "Маълумоти мавҷудаи худро ҳамеша идора карда метавонед.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(22.dp))
@@ -352,12 +296,18 @@ private fun ParticipationPausedScreen(
         ) {
             Text("Маълумоти ман")
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(20.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Мавзӯи торик", modifier = Modifier.weight(1f))
+            Icon(
+                if (darkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
+                contentDescription = if (darkTheme) "Мавзӯи торик" else "Мавзӯи равшан",
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(10.dp))
             Switch(checked = darkTheme, onCheckedChange = onDarkThemeChange)
         }
         if (resumeError.isNotBlank()) {
