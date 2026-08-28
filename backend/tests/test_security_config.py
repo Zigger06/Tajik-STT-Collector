@@ -116,6 +116,10 @@ class RepositorySecurityConfigTest(unittest.TestCase):
             ROOT
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/MainActivity.kt"
         ).read_text(encoding="utf-8")
+        my_data = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/ui/MyDataScreen.kt"
+        ).read_text(encoding="utf-8")
         local_store = (
             ROOT
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/data/LocalStore.kt"
@@ -133,7 +137,7 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         self.assertIn("BackHandler(enabled = showMyData)", activity)
         self.assertIn("onBack = { showMyData = false }", activity)
         self.assertIn("Иштирокро аз нав оғоз кардан", activity)
-        self.assertIn("keepLocalCopies", activity)
+        self.assertIn("keepLocalCopies", my_data)
         self.assertIn('preferences.getBoolean("keep_local_copies", false)', local_store)
         self.assertIn("MediaStore.Downloads.EXTERNAL_CONTENT_URI", local_store)
         self.assertIn("store.retainUploadedCopy(recording)", worker)
