@@ -111,6 +111,36 @@ class RepositorySecurityConfigTest(unittest.TestCase):
         self.assertIn("credentialBootstrapEpoch++", activity)
         self.assertIn("key(credentialBootstrapEpoch)", activity)
 
+    def test_my_data_navigation_local_copy_and_explicit_resume_controls_are_present(self) -> None:
+        activity = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/MainActivity.kt"
+        ).read_text(encoding="utf-8")
+        local_store = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/data/LocalStore.kt"
+        ).read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/data/UploadWorker.kt"
+        ).read_text(encoding="utf-8")
+        api = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/network/ApiClient.kt"
+        ).read_text(encoding="utf-8")
+        security = (ROOT / "backend/collector/security.py").read_text(encoding="utf-8")
+
+        self.assertIn("BackHandler(enabled = showMyData)", activity)
+        self.assertIn("onBack = { showMyData = false }", activity)
+        self.assertIn("Иштирокро аз нав оғоз кардан", activity)
+        self.assertIn("keepLocalCopies", activity)
+        self.assertIn('preferences.getBoolean("keep_local_copies", false)', local_store)
+        self.assertIn("MediaStore.Downloads.EXTERNAL_CONTENT_URI", local_store)
+        self.assertIn("store.retainUploadedCopy(recording)", worker)
+        self.assertIn("suspend fun resumeConsent()", api)
+        self.assertIn("explicit re-consent is required", security)
+        self.assertIn("self.challenges.verify(challenge_nonce, challenge_proof, device_key)", security)
+
     def test_backend_does_not_take_volunteer_identity_from_query_or_json(self) -> None:
         http_api = (ROOT / "backend/collector/http_api.py").read_text(encoding="utf-8")
         security = (ROOT / "backend/collector/security.py").read_text(encoding="utf-8")
