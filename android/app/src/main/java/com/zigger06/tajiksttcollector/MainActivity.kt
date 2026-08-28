@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.zigger06.tajiksttcollector.data.LocalStore
+import com.zigger06.tajiksttcollector.data.RECORDING_TASK_CACHE_TARGET
 import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.ui.CollectorApp
@@ -77,6 +78,10 @@ class MainActivity : ComponentActivity() {
             // the server still has only the legacy volunteer row and no credential.
             // Claim that legacy row once, silently, before relying on authenticated
             // routes. Failure is non-destructive and is retried on a later app start.
+            //
+            // The same background effect also warms the recording-prompt cache.
+            // Existing cached prompts are seeded into process memory immediately;
+            // network prefetch is best-effort and never blocks the home screen.
             LaunchedEffect(initialSettings) {
                 val migrationKey = "device_credential_bootstrapped_v1"
                 val needsBootstrap = initialSettings.isConfigured &&
@@ -91,6 +96,30 @@ class MainActivity : ComponentActivity() {
                     } catch (_: Exception) {
                         // Preserve offline-first behavior. Do not mark success; the
                         // next app start will retry the safe idempotent migration.
+                    }
+                }
+
+                val current = store.loadSettings()
+                ApiClient.seedRecordingTasks(current.volunteerId, store.cachedRecordingTasks())
+                if (current.isConfigured && !current.participationRevoked) {
+                    val missing = (
+                        RECORDING_TASK_CACHE_TARGET - store.cachedRecordingTaskCount()
+                    ).coerceAtLeast(0)
+                    if (missing > 0) {
+                        try {
+                            val excluded = (
+                                store.pendingTextIds() + store.cachedRecordingTaskIds()
+                            ).distinct()
+                            val fresh = ApiClient(current).recordingTasks(missing, excluded)
+                            store.cacheRecordingTasks(fresh)
+                            ApiClient.seedRecordingTasks(
+                                current.volunteerId,
+                                store.cachedRecordingTasks(),
+                            )
+                        } catch (_: Exception) {
+                            // Offline is normal: whatever was already cached remains
+                            // immediately usable and the uploader will replenish later.
+                        }
                     }
                 }
             }
