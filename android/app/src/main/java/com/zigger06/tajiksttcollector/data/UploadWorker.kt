@@ -24,6 +24,11 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             api.registerVolunteer()
             for (recording in store.pendingRecordings()) {
                 api.uploadRecording(recording)
+                if (store.keepLocalCopies()) {
+                    // The server upload is idempotent, so a failed local-copy write
+                    // can safely retry without duplicating the server recording.
+                    store.retainUploadedCopy(recording)
+                }
                 store.removePending(recording.id)
                 File(recording.filePath).delete()
             }
