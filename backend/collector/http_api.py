@@ -58,8 +58,6 @@ class ReviewMediaGrantStore:
         now = self.clock()
         with self._lock:
             self._purge_locked(now)
-            # One current audio assignment per reviewer. Requesting a new task
-            # makes older media capabilities for that reviewer useless.
             stale = [
                 token for token, grant in self._items.items()
                 if grant.reviewer_id == reviewer_id
@@ -76,12 +74,6 @@ class ReviewMediaGrantStore:
             return token
 
     def peek(self, token: str, recording_id: str) -> ReviewMediaGrant | None:
-        """Validate a capability without spending a full-download use.
-
-        Android MediaPlayer commonly probes/streams one playback with HTTP Range
-        requests. Those byte-range requests are parts of the same download and
-        must not burn the tiny full-download budget one request at a time.
-        """
         if not token:
             return None
         now = self.clock()
@@ -144,7 +136,7 @@ def make_handler(
     security_context: DeviceSecurity | None = None,
     review_grants: ReviewMediaGrantStore | None = None,
 ) -> Type[BaseHTTPRequestHandler]:
-    del public_base_url  # Kept for compatibility with the existing launcher/API.
+    del public_base_url
     admin_path = Path(admin_file).resolve()
     security = security_context or DeviceSecurity(service)
     grants = review_grants or ReviewMediaGrantStore()
@@ -187,12 +179,13 @@ def make_handler(
 
                 if parsed.path == "/api/v1/me/recordings":
                     volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
-                    self._send_json(
-                        {
-                            "recordings": service.list_volunteer_recordings(volunteer_id),
-                            "consent_active": service.volunteer_consent_active(volunteer_id),
-                        }
-                    )
+                    limit = int(query.get("limit", ["10"])[0])
+                    offset = int(query.get("offset", ["0"])[0])
+                    if not 1 <= limit <= 50 or offset < 0:
+                        raise CollectorError("invalid recordings page")
+                    page = service.volunteer_recordings_page(volunteer_id, limit, offset)
+                    page["consent_active"] = service.volunteer_consent_active(volunteer_id)
+                    self._send_json(page)
                     return
                 if parsed.path == "/api/v1/me/recordings/archive":
                     volunteer_id = self._authenticated_volunteer("data", allow_revoked=True)
@@ -275,12 +268,11 @@ def make_handler(
                 self._send_error(exc.status_code, str(exc))
             except ValueError:
                 self._send_error(HTTPStatus.BAD_REQUEST, "numeric parameter is invalid")
-            except Exception:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover
                 traceback.print_exc()
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
         def do_HEAD(self) -> None:  # noqa: N802
-            """Serve reviewer media metadata without spending a download use."""
             try:
                 parsed = urlparse(self.path)
                 query = parse_qs(parsed.query)
@@ -366,6 +358,18 @@ def make_handler(
                         source=body.get("source", ""),
                     )
                     self._send_json(result, HTTPStatus.CREATED)
+                elif parsed.path == "/api/v1/texts/batch":
+                    volunteer_id = self._authenticated_volunteer("text")
+                    body = self._read_json()
+                    texts = body.get("texts", [])
+                    if not isinstance(texts, list):
+                        raise CollectorError("texts must be a JSON array")
+                    result = service.submit_text_batch(
+                        volunteer_id=volunteer_id,
+                        contents=texts,
+                        source=body.get("source", ""),
+                    )
+                    self._send_json(result, HTTPStatus.CREATED)
                 elif parsed.path == "/api/v1/recordings":
                     volunteer_id = self._authenticated_volunteer("upload")
                     content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
@@ -417,7 +421,7 @@ def make_handler(
                 self._send_error(HTTPStatus.BAD_REQUEST, "numeric parameter is invalid")
             except CollectorError as exc:
                 self._send_error(exc.status_code, str(exc))
-            except Exception:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover
                 traceback.print_exc()
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
@@ -441,7 +445,7 @@ def make_handler(
                 self._send_error(exc.status_code, str(exc), retry_after=exc.retry_after)
             except CollectorError as exc:
                 self._send_error(exc.status_code, str(exc))
-            except Exception:  # pragma: no cover - last-resort server protection
+            except Exception:  # pragma: no cover
                 traceback.print_exc()
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
@@ -665,7 +669,6 @@ def make_handler(
                         self.wfile.write(chunk)
                         remaining -= len(chunk)
             except OSError:
-                # Headers may already be sent; terminate this response quietly.
                 return
 
         def _send_range_not_satisfiable(self, size: int) -> None:
@@ -724,9 +727,6 @@ def make_handler(
             )
 
         def log_message(self, format: str, *args) -> None:
-            # BaseHTTPRequestHandler never logs Authorization headers. Reviewer
-            # capabilities are in short-lived URLs for Android MediaPlayer, so
-            # redact them before printing the request line as well.
             message = format % args
             message = re.sub(r"(review_token=)[^& ]+", r"\1<redacted>", message)
             print(f"{self.client_address[0]} - {message}")
