@@ -105,8 +105,8 @@ class RepositorySecurityConfigTest(unittest.TestCase):
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/MainActivity.kt"
         ).read_text(encoding="utf-8")
         self.assertIn('"device_credential_bootstrapped_v1"', activity)
-        self.assertIn("initialSettings.isConfigured", activity)
-        self.assertIn("ApiClient(initialSettings).registerVolunteer()", activity)
+        self.assertIn("current.isConfigured", activity)
+        self.assertIn("ApiClient(current).registerVolunteer()", activity)
         self.assertIn("putBoolean(migrationKey, true)", activity)
         self.assertIn("credentialBootstrapEpoch++", activity)
         self.assertIn("key(credentialBootstrapEpoch)", activity)
