@@ -7,7 +7,8 @@ import secrets
 from pathlib import Path
 
 from collector.database import Database
-from collector.http_api import serve, serve_online
+from collector.http_api import serve
+from collector.online_server import serve_online_fast_registration
 from collector.storage_aware_service import StorageAwareCollectorService
 
 
@@ -92,7 +93,7 @@ def main() -> None:
         print(f"Admin key for local panel: {config['admin_key']}")
         print(f"The admin key is stored only on this PC: {ONLINE_CONFIG_PATH}")
         print("Android volunteers do not need a password or project key.")
-        serve_online(
+        serve_online_fast_registration(
             service=service,
             public_host=args.public_host,
             public_port=args.public_port,
