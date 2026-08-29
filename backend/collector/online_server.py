@@ -5,7 +5,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .http_api import make_handler
-from .security import DeviceSecurity
+from .security import DEFAULT_RATE_RULES, DeviceSecurity, RateRule
 from .service import CollectorService
 
 
@@ -14,6 +14,19 @@ from .service import CollectorService
 # the existing per-device/IP registration limits still provide the main anti-abuse
 # boundary. Existing devices do not solve this challenge again during normal use.
 ANDROID_REGISTRATION_DIFFICULTY = 16
+
+# A real volunteer can legitimately read well over 40 short prompts in one hour.
+# The previous 40/hour upload rule therefore punished normal collection sessions
+# (for example, finishing the initial 52-text bank) as if they were abuse. Keep a
+# bounded per-device budget, but size it for human recording sessions rather than
+# HTTP request counts from a single five-file batch.
+ONLINE_RATE_RULES = {
+    **DEFAULT_RATE_RULES,
+    "upload": {
+        "device": (RateRule(120, 600), RateRule(600, 3600)),
+        "ip": (RateRule(4000, 600), RateRule(20000, 3600)),
+    },
+}
 
 
 def serve_online_fast_registration(
@@ -34,10 +47,12 @@ def serve_online_fast_registration(
     public_security = DeviceSecurity(
         service,
         challenge_difficulty=ANDROID_REGISTRATION_DIFFICULTY,
+        rate_rules=ONLINE_RATE_RULES,
     )
     admin_security = DeviceSecurity(
         service,
         challenge_difficulty=ANDROID_REGISTRATION_DIFFICULTY,
+        rate_rules=ONLINE_RATE_RULES,
     )
 
     public_handler = make_handler(

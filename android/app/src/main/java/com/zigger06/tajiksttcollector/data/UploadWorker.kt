@@ -1,6 +1,7 @@
 package com.zigger06.tajiksttcollector.data
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -12,6 +13,7 @@ import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.network.ApiException
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
@@ -90,6 +92,11 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 .build()
             val request = OneTimeWorkRequestBuilder<UploadWorker>()
                 .setConstraints(constraints)
+                // NetworkType.CONNECTED only tells us that the phone has internet.
+                // The PC/Funnel can still be offline while Android remains online.
+                // Keep retrying on a short linear backoff so a queued batch normally
+                // resumes by itself soon after the collector server comes back.
+                .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
                 UNIQUE_UPLOAD_WORK,

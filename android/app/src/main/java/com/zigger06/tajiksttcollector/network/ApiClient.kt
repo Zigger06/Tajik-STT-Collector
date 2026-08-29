@@ -257,6 +257,10 @@ class ApiClient(private val settings: AppSettings) {
         bytes
     }
 
+    /** Returns only an already-fetched own WAV; this method never touches the network. */
+    fun cachedOwnRecordingAudio(recordingId: String): ByteArray? =
+        cachedAudio("own:${settings.volunteerId}:$recordingId")
+
     suspend fun downloadOwnRecordingTo(recordingId: String, output: OutputStream) =
         withContext(Dispatchers.IO) {
             output.write(ownRecordingAudio(recordingId))
@@ -366,9 +370,29 @@ class ApiClient(private val settings: AppSettings) {
             val body = response.body ?: throw IOException("Server returned an empty file")
             val declared = body.contentLength()
             if (declared > maxBytes) throw IOException("Audio is too large for memory cache")
-            val output = ByteArrayOutputStream(
-                if (declared in 1..maxBytes.toLong()) declared.toInt() else 64 * 1024,
-            )
+
+            // Our audio endpoints always provide Content-Length. Read exactly that
+            // many bytes and return immediately instead of waiting for a socket EOF.
+            // This also makes the download path robust if an HTTP connection is kept
+            // alive after the complete WAV body has already arrived.
+            if (declared >= 0L) {
+                val expected = declared.toInt()
+                val output = ByteArrayOutputStream(expected)
+                body.byteStream().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    var remaining = expected
+                    while (remaining > 0) {
+                        val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+                        if (read < 0) throw IOException("Audio response ended early")
+                        output.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                }
+                return output.toByteArray()
+            }
+
+            // Defensive fallback for an unexpected chunked/unknown-length response.
+            val output = ByteArrayOutputStream(64 * 1024)
             body.byteStream().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 var total = 0
