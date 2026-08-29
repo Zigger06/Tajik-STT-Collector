@@ -16,7 +16,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
@@ -57,11 +59,7 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
-    /**
-     * Explicit re-consent is intentionally different from background registration.
-     * A fresh proof-of-work challenge is sent on the first request so the backend
-     * can distinguish a deliberate resume action from a stale/background worker.
-     */
+    /** Explicit re-consent always uses a fresh proof challenge. */
     suspend fun resumeConsent() = withContext(Dispatchers.IO) {
         val challenge = registrationChallenge()
         val nonce = challenge.getString("nonce")
@@ -87,11 +85,17 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
+    suspend fun submitTexts(texts: List<String>, source: String = ""): Int =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject()
+                .put("texts", JSONArray(texts))
+                .put("source", source)
+            execute(jsonRequest("/api/v1/texts/batch", body)).optInt("inserted", 0)
+        }
+
     /**
      * Recording UI asks this for every prompt. The hot path is deliberately local:
      * a prefetched task is returned without touching DNS, Funnel or the PC server.
-     * Only an empty cache performs one batch network request and fills the next
-     * several prompts at once.
      */
     suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
         withContext(Dispatchers.IO) {
@@ -162,6 +166,16 @@ class ApiClient(private val settings: AppSettings) {
         )
     }
 
+    /** Download reviewer audio once; repeated playback comes from process RAM. */
+    suspend fun reviewAudio(recordingId: String, audioUrl: String): ByteArray =
+        withContext(Dispatchers.IO) {
+            val key = "review:${settings.volunteerId}:$recordingId"
+            cachedAudio(key)?.let { return@withContext it }
+            val bytes = executeBytes(Request.Builder().url(audioUrl).get().build())
+            cacheAudio(key, bytes)
+            bytes
+        }
+
     suspend fun uploadRecording(recording: PendingRecording) = withContext(Dispatchers.IO) {
         val file = File(recording.filePath)
         if (!file.exists()) throw IOException("Local WAV file is missing")
@@ -195,41 +209,58 @@ class ApiClient(private val settings: AppSettings) {
                 .put("verdict", verdict)
                 .put("reason", reason)
             execute(jsonRequest("/api/v1/audio-reviews", body))
+            removeCachedAudio("review:${settings.volunteerId}:$recordingId")
             Unit
         }
 
-    suspend fun myData(): MyDataSnapshot = withContext(Dispatchers.IO) {
-        val response = execute(
-            authorizedBuilder("$baseUrl/api/v1/me/recordings").get().build(),
-        )
-        val array = response.optJSONArray("recordings")
-        val recordings = buildList {
-            if (array != null) {
-                for (index in 0 until array.length()) {
-                    val item = array.getJSONObject(index)
-                    add(
-                        OwnRecording(
-                            id = item.getString("id"),
-                            status = item.optString("status", "pending"),
-                            createdAt = item.optString("created_at", ""),
-                            text = item.optString("text", ""),
-                            durationMs = item.optLong("duration_ms", 0L),
-                            sampleRate = item.optInt("sample_rate", 16000),
-                        ),
-                    )
+    suspend fun myData(offset: Int = 0, limit: Int = 10): MyDataSnapshot =
+        withContext(Dispatchers.IO) {
+            val url = "$baseUrl/api/v1/me/recordings".toHttpUrl().newBuilder()
+                .addQueryParameter("offset", offset.coerceAtLeast(0).toString())
+                .addQueryParameter("limit", limit.coerceIn(1, 50).toString())
+                .build()
+            val response = execute(authorizedBuilder(url.toString()).get().build())
+            val array = response.optJSONArray("recordings")
+            val recordings = buildList {
+                if (array != null) {
+                    for (index in 0 until array.length()) {
+                        val item = array.getJSONObject(index)
+                        add(
+                            OwnRecording(
+                                id = item.getString("id"),
+                                status = item.optString("status", "pending"),
+                                createdAt = item.optString("created_at", ""),
+                                text = item.optString("text", ""),
+                                durationMs = item.optLong("duration_ms", 0L),
+                                sampleRate = item.optInt("sample_rate", 16000),
+                            ),
+                        )
+                    }
                 }
             }
+            MyDataSnapshot(
+                recordings = recordings,
+                consentActive = response.optBoolean("consent_active", true),
+                total = response.optInt("total", recordings.size),
+                hasMore = response.optBoolean("has_more", false),
+                nextOffset = response.optInt("next_offset", offset + recordings.size),
+            )
         }
-        MyDataSnapshot(
-            recordings = recordings,
-            consentActive = response.optBoolean("consent_active", true),
-        )
+
+    /** Fetch once, keep a bounded in-memory copy, and reuse it for Play + Download. */
+    suspend fun ownRecordingAudio(recordingId: String): ByteArray = withContext(Dispatchers.IO) {
+        val key = "own:${settings.volunteerId}:$recordingId"
+        cachedAudio(key)?.let { return@withContext it }
+        val url = "$baseUrl/api/v1/me/recordings/$recordingId/audio"
+        val bytes = executeBytes(authorizedBuilder(url).get().build())
+        cacheAudio(key, bytes)
+        bytes
     }
 
     suspend fun downloadOwnRecordingTo(recordingId: String, output: OutputStream) =
         withContext(Dispatchers.IO) {
-            val url = "$baseUrl/api/v1/me/recordings/$recordingId/audio"
-            executeTo(authorizedBuilder(url).get().build(), output)
+            output.write(ownRecordingAudio(recordingId))
+            output.flush()
         }
 
     suspend fun downloadOwnArchiveTo(output: OutputStream) = withContext(Dispatchers.IO) {
@@ -245,15 +276,18 @@ class ApiClient(private val settings: AppSettings) {
                 .delete()
                 .build(),
         )
+        removeCachedAudio("own:${settings.volunteerId}:$recordingId")
         Unit
     }
 
     suspend fun deleteAllOwnRecordings(): Int = withContext(Dispatchers.IO) {
-        execute(
+        val deleted = execute(
             authorizedBuilder("$baseUrl/api/v1/me/recordings")
                 .delete()
                 .build(),
         ).optInt("deleted", 0)
+        removeCachedAudioPrefix("own:${settings.volunteerId}:")
+        deleted
     }
 
     suspend fun revokeConsent() = withContext(Dispatchers.IO) {
@@ -318,6 +352,38 @@ class ApiClient(private val settings: AppSettings) {
         }
     }
 
+    private fun executeBytes(request: Request, maxBytes: Int = MAX_RAM_AUDIO_BYTES): ByteArray {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val text = response.body?.string().orEmpty()
+                val message = try {
+                    JSONObject(text).optString("error", "HTTP ${response.code}")
+                } catch (_: Exception) {
+                    "HTTP ${response.code}"
+                }
+                throw ApiException(response.code, message)
+            }
+            val body = response.body ?: throw IOException("Server returned an empty file")
+            val declared = body.contentLength()
+            if (declared > maxBytes) throw IOException("Audio is too large for memory cache")
+            val output = ByteArrayOutputStream(
+                if (declared in 1..maxBytes.toLong()) declared.toInt() else 64 * 1024,
+            )
+            body.byteStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > maxBytes) throw IOException("Audio is too large for memory cache")
+                    output.write(buffer, 0, read)
+                }
+            }
+            return output.toByteArray()
+        }
+    }
+
     private fun executeTo(request: Request, output: OutputStream) {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
@@ -357,8 +423,6 @@ class ApiClient(private val settings: AppSettings) {
                     iterator.remove()
                     continue
                 }
-                // Peek instead of removing. Saving the WAV explicitly discards this
-                // task from memory; exiting without saving keeps it available.
                 return@synchronized entry.value
             }
             null
@@ -389,8 +453,46 @@ class ApiClient(private val settings: AppSettings) {
     }
 
     companion object {
+        private const val MAX_RAM_AUDIO_BYTES = 25 * 1024 * 1024
+        private const val MAX_AUDIO_CACHE_BYTES = 32 * 1024 * 1024
+
         private val recordingTaskCacheLock = Any()
         private val recordingTaskCache = mutableMapOf<String, LinkedHashMap<Long, TextTask>>()
+
+        private val audioCacheLock = Any()
+        private val audioCache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {}
+        private var audioCacheBytes = 0
+
+        private fun cachedAudio(key: String): ByteArray? = synchronized(audioCacheLock) {
+            audioCache[key]
+        }
+
+        private fun cacheAudio(key: String, bytes: ByteArray) = synchronized(audioCacheLock) {
+            audioCache.remove(key)?.let { audioCacheBytes -= it.size }
+            audioCache[key] = bytes
+            audioCacheBytes += bytes.size
+            val iterator = audioCache.entries.iterator()
+            while (audioCacheBytes > MAX_AUDIO_CACHE_BYTES && iterator.hasNext()) {
+                val removed = iterator.next()
+                audioCacheBytes -= removed.value.size
+                iterator.remove()
+            }
+        }
+
+        private fun removeCachedAudio(key: String) = synchronized(audioCacheLock) {
+            audioCache.remove(key)?.let { audioCacheBytes -= it.size }
+        }
+
+        private fun removeCachedAudioPrefix(prefix: String) = synchronized(audioCacheLock) {
+            val iterator = audioCache.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (entry.key.startsWith(prefix)) {
+                    audioCacheBytes -= entry.value.size
+                    iterator.remove()
+                }
+            }
+        }
 
         /** Seeds process memory from LocalStore, or adds freshly prefetched tasks. */
         fun seedRecordingTasks(volunteerId: String, tasks: List<TextTask>) {

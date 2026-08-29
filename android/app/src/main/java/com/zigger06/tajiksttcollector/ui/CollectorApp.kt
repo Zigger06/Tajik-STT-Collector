@@ -85,6 +85,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.zigger06.tajiksttcollector.audio.ByteArrayMediaDataSource
 import com.zigger06.tajiksttcollector.audio.RecordingResult
 import com.zigger06.tajiksttcollector.audio.WavRecorder
 import com.zigger06.tajiksttcollector.data.AppSettings
@@ -103,6 +104,7 @@ import java.io.File
 import java.util.UUID
 
 private enum class Screen { HOME, SETUP, RECORD, ADD_TEXT, TEXT_REVIEW, AUDIO_REVIEW }
+private enum class TextInputMode { SINGLE, MULTI }
 
 private const val PRIVACY_URL = "https://zigger06.github.io/Tajik-STT-Collector/privacy.html"
 private const val TERMS_URL = "https://zigger06.github.io/Tajik-STT-Collector/terms.html"
@@ -123,9 +125,6 @@ fun CollectorApp(
     var pendingCount by remember { mutableIntStateOf(store.pendingCount()) }
     var volunteerStats by remember { mutableStateOf(store.cachedVolunteerStats()) }
 
-    // Home numbers are local UI state. Polling tiny app-private SQLite/SharedPreferences
-    // is cheap and means WorkManager can update the screen within a fraction of a
-    // second after a successful upload without another server request or navigation.
     LaunchedEffect(screen) {
         if (screen == Screen.HOME) {
             while (true) {
@@ -136,9 +135,6 @@ fun CollectorApp(
         }
     }
 
-    // Server-side review status may change while another volunteer is working, so
-    // refresh it gently. This is deliberately time-based rather than navigation-
-    // based: rapidly opening a screen and pressing Back must not create a stats flood.
     LaunchedEffect(settings.volunteerId, settings.serverUrl, settings.participationRevoked) {
         if (settings.isConfigured && !settings.participationRevoked) {
             while (true) {
@@ -206,7 +202,7 @@ fun CollectorApp(
                             screen = Screen.HOME
                             snackbar.showSnackbar("Пайвастшавӣ муваффақ шуд.")
                         } catch (error: Exception) {
-                            snackbar.showSnackbar(userFacingError(error, "Пайвастшавӣ нашуд."))
+                            snackbar.showSnackbar(userFacingError(error, "Сервер Дастнорас аст"))
                         }
                     }
                 },
@@ -282,10 +278,7 @@ private fun HomeScreen(
                 tint = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.width(6.dp))
-            Switch(
-                checked = darkTheme,
-                onCheckedChange = onDarkThemeChange,
-            )
+            Switch(checked = darkTheme, onCheckedChange = onDarkThemeChange)
             IconButton(onClick = onSettings) {
                 Icon(Icons.Default.Settings, contentDescription = "Танзимот")
             }
@@ -404,10 +397,7 @@ private fun ActionCard(
             modifier = Modifier.padding(20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier.size(52.dp),
-                contentAlignment = Alignment.Center,
-            ) {
+            Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
                 Icon(
                     icon,
                     contentDescription = null,
@@ -450,7 +440,12 @@ private fun SetupScreen(
             onValueChange = { displayName = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Ном") },
-            supportingText = { Text("Барои махфият метавонед тахаллус истифода баред") },
+            supportingText = {
+                Text(
+                    if (canGoBack) "Тағйири ном ҳисоби нав намесозад"
+                    else "Барои махфият метавонед тахаллус истифода баред",
+                )
+            },
             singleLine = true,
         )
         OutlinedTextField(
@@ -481,15 +476,11 @@ private fun SetupScreen(
             TextButton(
                 onClick = { uriHandler.openUri(PRIVACY_URL) },
                 modifier = Modifier.weight(1f),
-            ) {
-                Text("Сиёсати махфият")
-            }
+            ) { Text("Сиёсати махфият") }
             TextButton(
                 onClick = { uriHandler.openUri(TERMS_URL) },
                 modifier = Modifier.weight(1f),
-            ) {
-                Text("Шартҳои истифода")
-            }
+            ) { Text("Шартҳои истифода") }
         }
         Button(
             onClick = {
@@ -504,9 +495,7 @@ private fun SetupScreen(
             },
             modifier = Modifier.fillMaxWidth(),
             enabled = displayName.trim().length >= 2 && consent,
-        ) {
-            Text("Оғоз кардан", modifier = Modifier.padding(vertical = 5.dp))
-        }
+        ) { Text("Оғоз кардан", modifier = Modifier.padding(vertical = 5.dp)) }
     }
 }
 
@@ -691,9 +680,7 @@ private fun RecordingScreen(
                                 showMessage("5 сабт дар навбат нигоҳ дошта шуд ва дар замина фиристода мешавад.")
                                 onBack()
                             } else {
-                                showMessage(
-                                    "Сабти $sessionCount аз $RECORDING_BATCH_SIZE нигоҳ дошта шуд.",
-                                )
+                                showMessage("Сабти $sessionCount аз $RECORDING_BATCH_SIZE нигоҳ дошта шуд.")
                                 loadTask()
                             }
                         },
@@ -703,11 +690,8 @@ private fun RecordingScreen(
                         Icon(Icons.Default.Save, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (sessionCount + 1 >= RECORDING_BATCH_SIZE) {
-                                "Нигоҳ доштани 5 сабт"
-                            } else {
-                                "Нигоҳ доштан (${sessionCount + 1}/$RECORDING_BATCH_SIZE)"
-                            },
+                            if (sessionCount + 1 >= RECORDING_BATCH_SIZE) "Нигоҳ доштани 5 сабт"
+                            else "Нигоҳ доштан (${sessionCount + 1}/$RECORDING_BATCH_SIZE)",
                         )
                     }
                 }
@@ -724,34 +708,99 @@ private fun AddTextScreen(
     showMessage: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    var mode by rememberSaveable { mutableStateOf(TextInputMode.SINGLE) }
     var text by rememberSaveable { mutableStateOf("") }
     var source by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    val limit = if (mode == TextInputMode.SINGLE) 300 else 5000
+    val sentences = remember(text, mode) {
+        if (mode == TextInputMode.MULTI) splitVolunteerSentences(text) else listOf(text.trim()).filter { it.isNotBlank() }
+    }
+    val tooLongSentence = sentences.firstOrNull { it.length > 300 }
 
     ScreenColumn(modifier) {
         ScreenHeader("Иловаи матн", onBack)
         Text(
-            "Матни тоҷикиро ворид кунед. Он аввал ба санҷиши дигар ихтиёриён фиристода мешавад.",
+            "Матнҳои кӯтоҳи тоҷикиро пешниҳод кунед. Ҳар ҷумла ҳамчун вазифаи алоҳида санҷида мешавад.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (mode == TextInputMode.SINGLE) {
+                Button(
+                    onClick = { mode = TextInputMode.SINGLE; text = ""; error = "" },
+                    modifier = Modifier.weight(1f),
+                ) { Text("1 ҷумла") }
+            } else {
+                OutlinedButton(
+                    onClick = { mode = TextInputMode.SINGLE; text = ""; error = "" },
+                    modifier = Modifier.weight(1f),
+                ) { Text("1 ҷумла") }
+            }
+            if (mode == TextInputMode.MULTI) {
+                Button(
+                    onClick = { mode = TextInputMode.MULTI; text = ""; error = "" },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Якчанд ҷумла") }
+            } else {
+                OutlinedButton(
+                    onClick = { mode = TextInputMode.MULTI; text = ""; error = "" },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Якчанд ҷумла") }
+            }
+        }
+
+        Text(
+            if (mode == TextInputMode.SINGLE) {
+                "Як ҷумла ворид кунед — максимум 300 аломат."
+            } else {
+                "То 5000 аломат. Ҷумлаҳоро бо сатри нав ё бо . ! ? … ҷудо кунед; ҳар ҷумла максимум 300 аломат."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
         OutlinedTextField(
             value = text,
-            onValueChange = { if (it.length <= 1000) text = it },
+            onValueChange = { if (it.length <= limit) text = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Матн") },
-            supportingText = { Text("${text.length}/1000") },
-            minLines = 5,
-            maxLines = 12,
+            label = { Text(if (mode == TextInputMode.SINGLE) "Ҷумла" else "Ҷумлаҳо") },
+            supportingText = {
+                Text(
+                    if (mode == TextInputMode.MULTI) {
+                        "${text.length}/$limit · Ҷумлаҳо: ${sentences.size}"
+                    } else {
+                        "${text.length}/$limit"
+                    },
+                )
+            },
+            minLines = if (mode == TextInputMode.SINGLE) 3 else 7,
+            maxLines = if (mode == TextInputMode.SINGLE) 6 else 16,
         )
+
+        if (tooLongSentence != null) {
+            Text(
+                "Як ҷумла аз 300 аломат зиёд аст (${tooLongSentence.length}). Онро кӯтоҳ ё ба ду ҷумла ҷудо кунед.",
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (sentences.size > 50) {
+            Text(
+                "Дар як фиристодан максимум 50 ҷумла иҷозат аст. Матнро ба ду қисм ҷудо кунед.",
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
         OutlinedTextField(
             value = source,
             onValueChange = { if (it.length <= 500) source = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Манбаъ (ихтиёрӣ)") },
-            supportingText = {
-                Text("Масалан: номи китоб, сомона ё матни шахсии шумо")
-            },
+            supportingText = { Text("Масалан: номи китоб, сомона ё матни шахсии шумо") },
             minLines = 2,
             maxLines = 4,
         )
@@ -760,19 +809,23 @@ private fun AddTextScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (error.isNotBlank()) {
-            Text(error, color = MaterialTheme.colorScheme.error)
-        }
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+
         Button(
             onClick = {
                 scope.launch {
                     sending = true
                     error = ""
                     try {
-                        ApiClient(settings).submitText(text.trim(), source.trim())
+                        if (mode == TextInputMode.SINGLE) {
+                            ApiClient(settings).submitText(text.trim(), source.trim())
+                            showMessage("1 ҷумла барои санҷиш фиристода шуд. Раҳмат!")
+                        } else {
+                            val inserted = ApiClient(settings).submitTexts(sentences, source.trim())
+                            showMessage("$inserted ҷумла барои санҷиш фиристода шуд. Раҳмат!")
+                        }
                         text = ""
                         source = ""
-                        showMessage("Матн барои санҷиш фиристода шуд. Раҳмат!")
                     } catch (exception: Exception) {
                         error = userFacingError(exception, "Матн фиристода нашуд.")
                     } finally {
@@ -781,17 +834,41 @@ private fun AddTextScreen(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = text.trim().length >= 3 && !sending,
+            enabled = sentences.isNotEmpty() &&
+                sentences.all { it.length in 3..300 } &&
+                sentences.size <= 50 &&
+                !sending,
         ) {
-            if (sending) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(Icons.Default.PostAdd, contentDescription = null)
-            }
+            if (sending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Default.PostAdd, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("Фиристодан ба санҷиш")
         }
     }
+}
+
+private fun splitVolunteerSentences(raw: String): List<String> {
+    val result = mutableListOf<String>()
+    val current = StringBuilder()
+
+    fun flush() {
+        val value = current.toString().trim()
+        if (value.isNotBlank()) result += value
+        current.clear()
+    }
+
+    raw.replace("\r\n", "\n").replace('\r', '\n').forEach { char ->
+        when (char) {
+            '\n' -> flush()
+            '.', '!', '?', '…' -> {
+                current.append(char)
+                flush()
+            }
+            else -> current.append(char)
+        }
+    }
+    flush()
+    return result
 }
 
 @Composable
@@ -850,10 +927,7 @@ private fun TextReviewScreen(
             else -> {
                 val current = task!!
                 Text("Имло, калимаҳо ва маънои ҷумлаҳоро санҷед.")
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(22.dp),
-                ) {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
                     Column(Modifier.padding(22.dp)) {
                         Text(current.content, fontSize = 23.sp, lineHeight = 34.sp)
                         if (current.source.isNotBlank()) {
@@ -866,14 +940,15 @@ private fun TextReviewScreen(
                 if (editMode) {
                     OutlinedTextField(
                         value = correction,
-                        onValueChange = { correction = it },
+                        onValueChange = { if (it.length <= 300) correction = it },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Матни дуруст") },
+                        supportingText = { Text("${correction.length}/300") },
                         minLines = 3,
                     )
                     Button(
                         onClick = { submit("correction") },
-                        enabled = correction.trim().length >= 3,
+                        enabled = correction.trim().length in 3..300,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("Фиристодани ислоҳ") }
                 } else {
@@ -883,7 +958,7 @@ private fun TextReviewScreen(
                         Text("Дуруст аст")
                     }
                     OutlinedButton(
-                        onClick = { correction = current.content; editMode = true },
+                        onClick = { correction = current.content.take(300); editMode = true },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Default.EditNote, contentDescription = null)
@@ -908,6 +983,7 @@ private fun AudioReviewScreen(
 ) {
     val scope = rememberCoroutineScope()
     var task by remember { mutableStateOf<AudioReviewTask?>(null) }
+    var audioBytes by remember { mutableStateOf<ByteArray?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
     var reason by remember { mutableStateOf("") }
@@ -923,11 +999,20 @@ private fun AudioReviewScreen(
     fun loadTask() {
         scope.launch {
             stopPlayer()
+            task = null
+            audioBytes = null
             loading = true
             error = ""
             reason = ""
             try {
-                task = ApiClient(settings).audioReviewTask()
+                val api = ApiClient(settings)
+                val next = api.audioReviewTask()
+                task = next
+                if (next != null) {
+                    // Exactly one media request per assignment. The WAV then lives in
+                    // the bounded process RAM cache and repeated Play is fully local.
+                    audioBytes = api.reviewAudio(next.id, next.audioUrl)
+                }
             } catch (exception: Exception) {
                 error = userFacingError(exception, "Сабт гирифта нашуд.")
             } finally {
@@ -945,6 +1030,7 @@ private fun AudioReviewScreen(
                 ApiClient(settings).submitAudioReview(current.id, verdict, reason)
                 showMessage("Баҳо қабул шуд. Раҳмат!")
                 task = null
+                audioBytes = null
                 loadTask()
             } catch (exception: Exception) {
                 error = userFacingError(exception, "Баҳо фиристода нашуд.")
@@ -975,23 +1061,31 @@ private fun AudioReviewScreen(
                 }
                 Button(
                     onClick = {
-                        if (playing) stopPlayer()
-                        else {
-                            error = ""
-                            player = MediaPlayer().apply {
-                                setDataSource(current.audioUrl)
-                                setOnPreparedListener { media -> media.start(); playing = true }
-                                setOnCompletionListener { stopPlayer() }
-                                setOnErrorListener { _, _, _ ->
-                                    error = "Аудио дастрас нашуд. «Такрор кардан»-ро пахш кунед."
-                                    stopPlayer()
-                                    true
+                        if (playing) {
+                            stopPlayer()
+                        } else {
+                            val bytes = audioBytes
+                            if (bytes == null) {
+                                error = "Аудио ҳоло омода нест."
+                            } else {
+                                error = ""
+                                player = MediaPlayer().apply {
+                                    setDataSource(ByteArrayMediaDataSource(bytes))
+                                    setOnCompletionListener { stopPlayer() }
+                                    setOnErrorListener { _, _, _ ->
+                                        error = "Аудио кушода нашуд."
+                                        stopPlayer()
+                                        true
+                                    }
+                                    prepare()
+                                    start()
                                 }
-                                prepareAsync()
+                                playing = true
                             }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = audioBytes != null,
                 ) {
                     Icon(
                         if (playing) Icons.Default.PauseCircle else Icons.Default.PlayCircle,

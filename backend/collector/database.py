@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS audio_reviews (
 CREATE INDEX IF NOT EXISTS idx_texts_status ON texts(status);
 CREATE INDEX IF NOT EXISTS idx_recordings_text_status ON recordings(text_id, status);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
+CREATE INDEX IF NOT EXISTS idx_recordings_volunteer_created
+    ON recordings(volunteer_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_text_reviews_text ON text_reviews(text_id);
 CREATE INDEX IF NOT EXISTS idx_audio_reviews_recording ON audio_reviews(recording_id);
 """

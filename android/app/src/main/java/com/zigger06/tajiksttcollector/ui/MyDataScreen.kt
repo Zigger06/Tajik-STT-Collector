@@ -38,6 +38,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,14 +59,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zigger06.tajiksttcollector.audio.ByteArrayMediaDataSource
 import com.zigger06.tajiksttcollector.data.AppSettings
 import com.zigger06.tajiksttcollector.data.LocalStore
 import com.zigger06.tajiksttcollector.data.OwnRecording
 import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.network.ApiClient
 import kotlinx.coroutines.launch
-import java.io.File
 import java.io.IOException
+
+private const val MY_DATA_PAGE_SIZE = 10
 
 @Composable
 fun MyDataScreen(
@@ -73,13 +78,19 @@ fun MyDataScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
     var settings by remember { mutableStateOf(store.loadSettings()) }
     var recordings by remember { mutableStateOf<List<OwnRecording>>(emptyList()) }
+    var totalRecordings by remember { mutableStateOf(0) }
+    var hasMore by remember { mutableStateOf(false) }
+    var nextOffset by remember { mutableStateOf(0) }
     var consentActive by remember { mutableStateOf(!settings.participationRevoked) }
     var loading by remember { mutableStateOf(true) }
-    var busy by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var actionBusy by remember { mutableStateOf(false) }
+    var audioBusyId by remember { mutableStateOf<String?>(null) }
+    var downloadBusyId by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf("") }
-    var message by remember { mutableStateOf("") }
     var recordingToDelete by remember { mutableStateOf<OwnRecording?>(null) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var confirmRevoke by remember { mutableStateOf(false) }
@@ -95,10 +106,23 @@ fun MyDataScreen(
         playingId = null
     }
 
+    suspend fun applyParticipationState(snapshotConsentActive: Boolean) {
+        consentActive = snapshotConsentActive
+        if (!snapshotConsentActive && !settings.participationRevoked) {
+            UploadWorker.cancel(context)
+            store.markParticipationRevoked()
+            settings = store.loadSettings()
+            onParticipationRevoked()
+        }
+    }
+
     suspend fun refreshData(showSpinner: Boolean = true) {
         settings = store.loadSettings()
         if (settings.serverUrl.isBlank() || settings.displayName.isBlank()) {
             recordings = emptyList()
+            totalRecordings = 0
+            hasMore = false
+            nextOffset = 0
             loading = false
             error = "Аввал танзими барномаро анҷом диҳед."
             return
@@ -106,19 +130,71 @@ fun MyDataScreen(
         if (showSpinner) loading = true
         error = ""
         try {
-            val snapshot = ApiClient(settings).myData()
+            val snapshot = ApiClient(settings).myData(offset = 0, limit = MY_DATA_PAGE_SIZE)
             recordings = snapshot.recordings
-            consentActive = snapshot.consentActive
-            if (!snapshot.consentActive && !settings.participationRevoked) {
-                UploadWorker.cancel(context)
-                store.markParticipationRevoked()
-                settings = store.loadSettings()
-                onParticipationRevoked()
-            }
+            totalRecordings = snapshot.total
+            hasMore = snapshot.hasMore
+            nextOffset = snapshot.nextOffset
+            applyParticipationState(snapshot.consentActive)
         } catch (exception: Exception) {
             error = userFacingError(exception, "Маълумот гирифта нашуд. Баъдтар дубора кӯшиш кунед.")
         } finally {
             loading = false
+        }
+    }
+
+    fun loadMore() {
+        if (!hasMore || loadingMore) return
+        scope.launch {
+            loadingMore = true
+            error = ""
+            try {
+                val snapshot = ApiClient(settings).myData(
+                    offset = nextOffset,
+                    limit = MY_DATA_PAGE_SIZE,
+                )
+                val known = recordings.mapTo(mutableSetOf()) { it.id }
+                recordings = recordings + snapshot.recordings.filter { known.add(it.id) }
+                totalRecordings = snapshot.total
+                hasMore = snapshot.hasMore
+                nextOffset = snapshot.nextOffset
+                applyParticipationState(snapshot.consentActive)
+            } catch (exception: Exception) {
+                error = userFacingError(exception, "Сабтҳои дигар гирифта нашуданд.")
+            } finally {
+                loadingMore = false
+            }
+        }
+    }
+
+    fun playRecording(recording: OwnRecording) {
+        if (playingId == recording.id) {
+            stopPlayer()
+            return
+        }
+        scope.launch {
+            audioBusyId = recording.id
+            error = ""
+            stopPlayer()
+            try {
+                val bytes = ApiClient(settings).ownRecordingAudio(recording.id)
+                player = MediaPlayer().apply {
+                    setDataSource(ByteArrayMediaDataSource(bytes))
+                    setOnCompletionListener { stopPlayer() }
+                    setOnErrorListener { _, _, _ ->
+                        error = "Аудио кушода нашуд."
+                        stopPlayer()
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+                playingId = recording.id
+            } catch (exception: Exception) {
+                error = userFacingError(exception, "Аудио гирифта нашуд.")
+            } finally {
+                audioBusyId = null
+            }
         }
     }
 
@@ -129,298 +205,240 @@ fun MyDataScreen(
         pendingDownloadId = null
         if (uri != null && recordingId != null) {
             scope.launch {
-                busy = true
+                downloadBusyId = recordingId
                 error = ""
                 try {
+                    val bytes = ApiClient(settings).ownRecordingAudio(recordingId)
                     val output = context.contentResolver.openOutputStream(uri)
                         ?: throw IOException("output unavailable")
-                    output.use { ApiClient(settings).downloadOwnRecordingTo(recordingId, it) }
-                    message = "Сабт ба дастгоҳи шумо боргирӣ шуд."
+                    output.use {
+                        it.write(bytes)
+                        it.flush()
+                    }
+                    snackbar.showSnackbar("Сабт шуд")
                 } catch (exception: Exception) {
                     error = userFacingError(exception, "Сабт боргирӣ нашуд.")
                 } finally {
-                    busy = false
-                }
-            }
-        }
-    }
-
-    val saveArchiveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip"),
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                busy = true
-                error = ""
-                try {
-                    val output = context.contentResolver.openOutputStream(uri)
-                        ?: throw IOException("output unavailable")
-                    output.use { ApiClient(settings).downloadOwnArchiveTo(it) }
-                    message = "Ҳамаи сабтҳои дастрас боргирӣ шуданд."
-                } catch (exception: Exception) {
-                    error = userFacingError(exception, "Бойгонӣ боргирӣ нашуд.")
-                } finally {
-                    busy = false
+                    downloadBusyId = null
                 }
             }
         }
     }
 
     LaunchedEffect(Unit) { refreshData() }
-    DisposableEffect(Unit) {
-        onDispose {
-            stopPlayer()
-            context.cacheDir.listFiles()
-                ?.filter { it.name.startsWith("my-data-") && it.extension == "wav" }
-                ?.forEach { it.delete() }
-        }
-    }
+    DisposableEffect(Unit) { onDispose { stopPlayer() } }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != null) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Бозгашт")
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { scaffoldPadding ->
+        Column(
+            modifier = Modifier
+                .padding(scaffoldPadding)
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onBack != null) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Бозгашт")
+                    }
+                } else {
+                    Icon(
+                        Icons.Default.PrivacyTip,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(12.dp))
                 }
-            } else {
-                Icon(
-                    Icons.Default.PrivacyTip,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(12.dp))
+                Text("Маълумоти ман", fontSize = 28.sp, fontWeight = FontWeight.Black)
             }
-            Text("Маълумоти ман", fontSize = 28.sp, fontWeight = FontWeight.Black)
-        }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
-        ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
             ) {
-                Text("Овози шумо зери назорати шумост", fontWeight = FontWeight.ExtraBold)
-                Text(
-                    "Сабтҳои фиристодаи шумо дар компютери лоиҳаи Tajik‑STT нигоҳ дошта мешаванд. " +
-                        "Шумо метавонед онҳоро дар ин ҷо бинед, гӯш кунед, боргирӣ кунед ё ҳазф намоед.",
-                )
-                Text(
-                    "Ҳазф кардани сабти аслӣ онро аз нигоҳдории сервер ва маҷмӯаҳои оянда хориҷ мекунад. " +
-                        "Агар он қаблан барои омӯзиши модели анҷомёфта истифода шуда бошад, ҳазфи WAV " +
-                        "омӯзиши анҷомёфтаро худкор барнамегардонад.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        OutlinedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Нусхаи маҳаллӣ", fontWeight = FontWeight.ExtraBold)
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Овози шумо зери назорати шумост", fontWeight = FontWeight.ExtraBold)
                     Text(
-                        "Пас аз фиристодани сабти овоз, нусха дар телефон нигоҳ дошта мешавад.",
+                        "Сабтҳои фиристодаи шумо дар компютери лоиҳаи Tajik‑STT нигоҳ дошта мешаванд. " +
+                            "Шумо метавонед онҳоро дар ин ҷо бинед, гӯш кунед, боргирӣ кунед ё ҳазф намоед.",
+                    )
+                    Text(
+                        "Ҳазф кардани сабти аслӣ онро аз нигоҳдории сервер ва маҷмӯаҳои оянда хориҷ мекунад. " +
+                            "Агар он қаблан барои омӯзиши модели анҷомёфта истифода шуда бошад, ҳазфи WAV " +
+                            "омӯзиши анҷомёфтаро худкор барнамегардонад.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = { showLocalCopyInfo = true }) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = "Маълумоти бештар",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                Switch(
-                    checked = keepLocalCopies,
-                    onCheckedChange = { enabled ->
-                        store.saveKeepLocalCopies(enabled)
-                        keepLocalCopies = enabled
-                    },
-                )
             }
-        }
 
-        if (!consentActive || settings.participationRevoked) {
             OutlinedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
             ) {
-                Text(
-                    "Иштироки шумо боздошта шудааст. Сабтҳои мавҷударо ҳоло ҳам метавонед " +
-                        "гӯш кунед, боргирӣ кунед ё ҳазф намоед; онҳо ба экспортҳои нави омӯзишӣ дохил намешаванд.",
-                    modifier = Modifier.padding(16.dp),
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-
-        if (message.isNotBlank()) {
-            Text(
-                message,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        if (error.isNotBlank()) {
-            Text(error, color = MaterialTheme.colorScheme.error)
-        }
-
-        when {
-            loading -> {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 48.dp),
-                    horizontalArrangement = Arrangement.Center,
-                ) { CircularProgressIndicator() }
-            }
-            recordings.isEmpty() -> {
-                Text(
-                    "Ҳоло дар сервер сабти фиристодаи шумо нест.",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 28.dp),
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            else -> {
-                Text(
-                    "Сабтҳои ман: ${recordings.size}",
-                    fontSize = 21.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                )
-                recordings.forEach { recording ->
-                    OwnRecordingCard(
-                        recording = recording,
-                        playing = playingId == recording.id,
-                        busy = busy,
-                        onPlay = {
-                            if (playingId == recording.id) {
-                                stopPlayer()
-                            } else {
-                                scope.launch {
-                                    busy = true
-                                    error = ""
-                                    stopPlayer()
-                                    val cacheFile = File(context.cacheDir, "my-data-${recording.id}.wav")
-                                    try {
-                                        cacheFile.outputStream().use {
-                                            ApiClient(settings).downloadOwnRecordingTo(recording.id, it)
-                                        }
-                                        player = MediaPlayer().apply {
-                                            setDataSource(cacheFile.absolutePath)
-                                            setOnCompletionListener {
-                                                stopPlayer()
-                                                cacheFile.delete()
-                                            }
-                                            setOnErrorListener { _, _, _ ->
-                                                error = "Аудио кушода нашуд."
-                                                stopPlayer()
-                                                cacheFile.delete()
-                                                true
-                                            }
-                                            prepare()
-                                            start()
-                                        }
-                                        playingId = recording.id
-                                    } catch (exception: Exception) {
-                                        cacheFile.delete()
-                                        error = userFacingError(exception, "Аудио гирифта нашуд.")
-                                    } finally {
-                                        busy = false
-                                    }
-                                }
-                            }
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Нусхаи маҳаллӣ", fontWeight = FontWeight.ExtraBold)
+                        Text(
+                            "Пас аз фиристодани сабти овоз, нусха дар телефон нигоҳ дошта мешавад.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { showLocalCopyInfo = true }) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = "Маълумоти бештар",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Switch(
+                        checked = keepLocalCopies,
+                        onCheckedChange = { enabled ->
+                            store.saveKeepLocalCopies(enabled)
+                            keepLocalCopies = enabled
                         },
-                        onDownload = {
-                            pendingDownloadId = recording.id
-                            saveRecordingLauncher.launch("${recording.id}.wav")
-                        },
-                        onDelete = { recordingToDelete = recording },
                     )
                 }
             }
-        }
 
-        OutlinedButton(
-            onClick = { scope.launch { refreshData() } },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-        ) {
-            Icon(Icons.Default.Refresh, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Нав кардан")
-        }
+            if (!consentActive || settings.participationRevoked) {
+                OutlinedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Text(
+                        "Иштироки шумо боздошта шудааст. Сабтҳои мавҷударо ҳоло ҳам метавонед " +
+                            "гӯш кунед, боргирӣ кунед ё ҳазф намоед; онҳо ба экспортҳои нави омӯзишӣ дохил намешаванд.",
+                        modifier = Modifier.padding(16.dp),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
 
-        Button(
-            onClick = { saveArchiveLauncher.launch("tajik-stt-my-recordings.zip") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = recordings.isNotEmpty() && !busy,
-        ) {
-            Icon(Icons.Default.Download, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Боргирии ҳамаи сабтҳо")
-        }
+            if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
 
-        Button(
-            onClick = { confirmDeleteAll = true },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = (recordings.isNotEmpty() || store.pendingCount() > 0) && !busy,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            ),
-        ) {
-            Icon(Icons.Default.Delete, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Ҳазфи ҳамаи сабтҳои ман")
-        }
+            when {
+                loading -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 48.dp),
+                        horizontalArrangement = Arrangement.Center,
+                    ) { CircularProgressIndicator() }
+                }
+                recordings.isEmpty() -> {
+                    Text(
+                        "Ҳоло дар сервер сабти фиристодаи шумо нест.",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 28.dp),
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                else -> {
+                    Text(
+                        "Сабтҳои ман: ${recordings.size} аз $totalRecordings",
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    recordings.forEach { recording ->
+                        OwnRecordingCard(
+                            recording = recording,
+                            playing = playingId == recording.id,
+                            busy = actionBusy ||
+                                audioBusyId == recording.id ||
+                                downloadBusyId == recording.id,
+                            onPlay = { playRecording(recording) },
+                            onDownload = {
+                                pendingDownloadId = recording.id
+                                saveRecordingLauncher.launch("${recording.id}.wav")
+                            },
+                            onDelete = { recordingToDelete = recording },
+                        )
+                    }
+                }
+            }
 
-        if (consentActive && !settings.participationRevoked) {
-            Text(
-                "Бозпас гирифтани розигӣ фиристодан ва истифодаи ояндаи сабтҳои шуморо қатъ мекунад. " +
-                    "Сабтҳои серверӣ то вақте ки шумо онҳоро ҳазф накунед, барои идора ва боргирӣ нигоҳ дошта мешаванд. " +
-                    "Сабтҳои ҳанӯз нафиристода дар ҳамин телефон мемонанд ва то аз нав оғоз кардани иштирок фиристода намешаванд.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(
-                onClick = { confirmRevoke = true },
+            if (hasMore) {
+                OutlinedButton(
+                    onClick = ::loadMore,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !loadingMore && !actionBusy,
+                ) {
+                    if (loadingMore) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Дигар сабтҳо")
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = { scope.launch { refreshData() } },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
+                enabled = !actionBusy,
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Нав кардан")
+            }
+
+            Button(
+                onClick = { confirmDeleteAll = true },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = (totalRecordings > 0 || store.pendingCount() > 0) && !actionBusy,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 ),
             ) {
-                Icon(Icons.Default.PrivacyTip, contentDescription = null)
+                Icon(Icons.Default.Delete, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Бозпас гирифтани розигӣ")
+                Text("Ҳазфи ҳамаи сабтҳои ман")
             }
-        }
 
-        Spacer(Modifier.height(20.dp))
+            if (consentActive && !settings.participationRevoked) {
+                Text(
+                    "Бозпас гирифтани розигӣ фиристодан ва истифодаи ояндаи сабтҳои шуморо қатъ мекунад. " +
+                        "Сабтҳои серверӣ то вақте ки шумо онҳоро ҳазф накунед, барои идора ва боргирӣ нигоҳ дошта мешаванд. " +
+                        "Сабтҳои ҳанӯз нафиристода дар ҳамин телефон мемонанд ва то аз нав оғоз кардани иштирок фиристода намешаванд.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(
+                    onClick = { confirmRevoke = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !actionBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) {
+                    Icon(Icons.Default.PrivacyTip, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Бозпас гирифтани розигӣ")
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+        }
     }
 
     if (showLocalCopyInfo) {
@@ -443,29 +461,27 @@ fun MyDataScreen(
 
     recordingToDelete?.let { recording ->
         AlertDialog(
-            onDismissRequest = { if (!busy) recordingToDelete = null },
+            onDismissRequest = { if (!actionBusy) recordingToDelete = null },
             title = { Text("Сабт ҳазф шавад?") },
             text = {
-                Text(
-                    "Файли аслии ин сабт аз сервер ҳазф мешавад ва дар экспортҳои оянда истифода намешавад.",
-                )
+                Text("Файли аслии ин сабт аз сервер ҳазф мешавад ва дар экспортҳои оянда истифода намешавад.")
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         scope.launch {
-                            busy = true
+                            actionBusy = true
                             error = ""
                             stopPlayer()
                             try {
                                 ApiClient(settings).deleteOwnRecording(recording.id)
                                 recordingToDelete = null
-                                message = "Сабт ҳазф шуд."
                                 refreshData(showSpinner = false)
+                                snackbar.showSnackbar("Сабт ҳазф шуд")
                             } catch (exception: Exception) {
                                 error = userFacingError(exception, "Сабт ҳазф нашуд.")
                             } finally {
-                                busy = false
+                                actionBusy = false
                             }
                         }
                     },
@@ -479,7 +495,7 @@ fun MyDataScreen(
 
     if (confirmDeleteAll) {
         AlertDialog(
-            onDismissRequest = { if (!busy) confirmDeleteAll = false },
+            onDismissRequest = { if (!actionBusy) confirmDeleteAll = false },
             title = { Text("Ҳамаи сабтҳо ҳазф шаванд?") },
             text = {
                 Text(
@@ -491,19 +507,19 @@ fun MyDataScreen(
                 TextButton(
                     onClick = {
                         scope.launch {
-                            busy = true
+                            actionBusy = true
                             error = ""
                             stopPlayer()
                             try {
                                 val deleted = ApiClient(settings).deleteAllOwnRecordings()
                                 val localDeleted = store.clearPendingRecordings()
                                 confirmDeleteAll = false
-                                message = "Сабтҳо ҳазф шуданд: сервер $deleted, телефон $localDeleted."
                                 refreshData(showSpinner = false)
+                                snackbar.showSnackbar("Сабтҳо ҳазф шуданд: сервер $deleted, телефон $localDeleted")
                             } catch (exception: Exception) {
                                 error = userFacingError(exception, "Сабтҳо ҳазф нашуданд.")
                             } finally {
-                                busy = false
+                                actionBusy = false
                             }
                         }
                     },
@@ -517,7 +533,7 @@ fun MyDataScreen(
 
     if (confirmRevoke) {
         AlertDialog(
-            onDismissRequest = { if (!busy) confirmRevoke = false },
+            onDismissRequest = { if (!actionBusy) confirmRevoke = false },
             title = { Text("Розигӣ бозпас гирифта шавад?") },
             text = {
                 Text(
@@ -530,7 +546,7 @@ fun MyDataScreen(
                 TextButton(
                     onClick = {
                         scope.launch {
-                            busy = true
+                            actionBusy = true
                             error = ""
                             try {
                                 ApiClient(settings).revokeConsent()
@@ -539,12 +555,12 @@ fun MyDataScreen(
                                 settings = store.loadSettings()
                                 consentActive = false
                                 confirmRevoke = false
-                                message = "Розигӣ бозпас гирифта шуд. Иштироки нав қатъ гардид."
+                                snackbar.showSnackbar("Розигӣ бозпас гирифта шуд")
                                 onParticipationRevoked()
                             } catch (exception: Exception) {
                                 error = userFacingError(exception, "Розигӣ бозпас гирифта нашуд.")
                             } finally {
-                                busy = false
+                                actionBusy = false
                             }
                         }
                     },
