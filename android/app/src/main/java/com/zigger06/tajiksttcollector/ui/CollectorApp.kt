@@ -788,6 +788,12 @@ private fun AddTextScreen(
                 color = MaterialTheme.colorScheme.error,
             )
         }
+        if (sentences.size > 50) {
+            Text(
+                "Дар як фиристодан максимум 50 ҷумла иҷозат аст. Матнро ба ду қисм ҷудо кунед.",
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
 
         OutlinedTextField(
             value = source,
@@ -862,7 +868,7 @@ private fun splitVolunteerSentences(raw: String): List<String> {
         }
     }
     flush()
-    return result.take(50)
+    return result
 }
 
 @Composable
