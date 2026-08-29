@@ -35,12 +35,7 @@ class ReviewMediaGrant:
 
 
 class ReviewMediaGrantStore:
-    """Short-lived bearer capabilities for reviewer audio.
-
-    Tokens live only in process memory, are scoped to one recording + reviewer,
-    expire quickly, have a small successful-download budget, and are invalidated
-    as soon as the reviewer submits the review. They are never persisted.
-    """
+    """Short-lived bearer capabilities for reviewer audio."""
 
     def __init__(
         self,
@@ -183,7 +178,19 @@ def make_handler(
                     offset = int(query.get("offset", ["0"])[0])
                     if not 1 <= limit <= 50 or offset < 0:
                         raise CollectorError("invalid recordings page")
-                    page = service.volunteer_recordings_page(volunteer_id, limit, offset)
+                    page_method = getattr(service, "volunteer_recordings_page", None)
+                    if callable(page_method):
+                        page = page_method(volunteer_id, limit, offset)
+                    else:
+                        all_recordings = service.list_volunteer_recordings(volunteer_id)
+                        selected = all_recordings[offset : offset + limit]
+                        next_offset = offset + len(selected)
+                        page = {
+                            "recordings": selected,
+                            "total": len(all_recordings),
+                            "has_more": next_offset < len(all_recordings),
+                            "next_offset": next_offset,
+                        }
                     page["consent_active"] = service.volunteer_consent_active(volunteer_id)
                     self._send_json(page)
                     return
@@ -364,11 +371,23 @@ def make_handler(
                     texts = body.get("texts", [])
                     if not isinstance(texts, list):
                         raise CollectorError("texts must be a JSON array")
-                    result = service.submit_text_batch(
-                        volunteer_id=volunteer_id,
-                        contents=texts,
-                        source=body.get("source", ""),
-                    )
+                    batch_method = getattr(service, "submit_text_batch", None)
+                    if callable(batch_method):
+                        result = batch_method(
+                            volunteer_id=volunteer_id,
+                            contents=texts,
+                            source=body.get("source", ""),
+                        )
+                    else:
+                        inserted = 0
+                        for text in texts:
+                            service.submit_text(
+                                volunteer_id=volunteer_id,
+                                content=str(text),
+                                source=body.get("source", ""),
+                            )
+                            inserted += 1
+                        result = {"inserted": inserted, "duplicates": 0, "text_ids": []}
                     self._send_json(result, HTTPStatus.CREATED)
                 elif parsed.path == "/api/v1/recordings":
                     volunteer_id = self._authenticated_volunteer("upload")
