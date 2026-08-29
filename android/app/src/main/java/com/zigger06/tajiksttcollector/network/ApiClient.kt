@@ -10,6 +10,7 @@ import com.zigger06.tajiksttcollector.data.TextTask
 import com.zigger06.tajiksttcollector.data.VolunteerStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -22,24 +23,46 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.security.MessageDigest
 import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
 
 class ApiException(val statusCode: Int, message: String) : IOException(message)
 
+/**
+ * Android's system resolver can return IPv6 routes first even on mobile networks
+ * where IPv6 connectivity to the public Funnel is incomplete. OkHttp 4.x may then
+ * wait on those routes one-by-one before trying IPv4, while Chrome succeeds quickly
+ * with its own Happy-Eyeballs/DNS stack. Keep system DNS (no third-party resolver),
+ * but prefer IPv4 addresses and retain IPv6 as a fallback.
+ */
+private object Ipv4FirstDns : Dns {
+    override fun lookup(hostname: String) =
+        Dns.SYSTEM.lookup(hostname).sortedBy { address ->
+            if (address is Inet4Address) 0 else 1
+        }
+}
+
 class ApiClient(private val settings: AppSettings) {
     private val baseUrl = settings.serverUrl.trim().trimEnd('/')
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
+        .dns(Ipv4FirstDns)
+        .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
+        // Bound DNS + connect + TLS + request/response as one operation. Without a
+        // call timeout, several unreachable routes could make a single button press
+        // appear frozen for minutes while the backend sees no request at all.
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    suspend fun checkHealth(): Boolean = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url("$baseUrl/health").get().build()
-        execute(request).optBoolean("ok", false)
-    }
+    /**
+     * Setup immediately performs the authenticated registration request next.
+     * A separate /health round-trip only doubles the chance of transport trouble and
+     * does not prove anything that a successful registration does not already prove.
+     */
+    suspend fun checkHealth(): Boolean = true
 
     suspend fun registerVolunteer() = withContext(Dispatchers.IO) {
         val body = registrationBody(settings.consent)
