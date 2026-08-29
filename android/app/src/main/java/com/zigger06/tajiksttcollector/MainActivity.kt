@@ -49,6 +49,7 @@ import com.zigger06.tajiksttcollector.data.LocalStore
 import com.zigger06.tajiksttcollector.data.RECORDING_TASK_CACHE_TARGET
 import com.zigger06.tajiksttcollector.data.UploadWorker
 import com.zigger06.tajiksttcollector.network.ApiClient
+import com.zigger06.tajiksttcollector.network.ServerConfig
 import com.zigger06.tajiksttcollector.ui.CollectorApp
 import com.zigger06.tajiksttcollector.ui.MyDataScreen
 import com.zigger06.tajiksttcollector.ui.theme.TajikCollectorTheme
@@ -82,16 +83,34 @@ class MainActivity : ComponentActivity() {
             // Claim that legacy row once, silently, before relying on authenticated
             // routes. Failure is non-destructive and is retried on a later app start.
             //
-            // The same background effect also warms the recording-prompt cache.
-            // Existing cached prompts are seeded into process memory immediately;
-            // network prefetch is best-effort and never blocks the home screen.
+            // This startup effect also repairs a stale saved server URL, resumes any
+            // pending upload worker, and warms the recording-prompt cache. None of
+            // these best-effort network actions block the home screen.
             LaunchedEffect(initialSettings) {
+                var current = store.loadSettings()
+
+                // Existing configured installs may still carry an older Funnel URL
+                // in SharedPreferences. Resolve the current deployment on every app
+                // start and recreate CollectorApp if the stored URL changed.
+                if (current.isConfigured) {
+                    try {
+                        val resolvedUrl = ServerConfig.resolve(current.serverUrl)
+                        if (resolvedUrl != current.serverUrl) {
+                            current = current.copy(serverUrl = resolvedUrl)
+                            store.saveSettings(current)
+                            credentialBootstrapEpoch++
+                        }
+                    } catch (_: Exception) {
+                        // Offline is normal; keep the last stored URL and local data.
+                    }
+                }
+
                 val migrationKey = "device_credential_bootstrapped_v1"
-                val needsBootstrap = initialSettings.isConfigured &&
+                val needsBootstrap = current.isConfigured &&
                     !migrationPreferences.getBoolean(migrationKey, false)
                 if (needsBootstrap) {
                     try {
-                        ApiClient(initialSettings).registerVolunteer()
+                        ApiClient(current).registerVolunteer()
                         migrationPreferences.edit().putBoolean(migrationKey, true).apply()
                         credentialBootstrapEpoch++
                     } catch (_: Exception) {
@@ -100,9 +119,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val current = store.loadSettings()
+                current = store.loadSettings()
                 ApiClient.seedRecordingTasks(current.volunteerId, store.cachedRecordingTasks())
                 if (current.isConfigured && !current.participationRevoked) {
+                    // WorkManager persists the queue across process/server restarts.
+                    // Scheduling again is idempotent because the work is unique.
+                    if (store.pendingRecordings().isNotEmpty()) {
+                        UploadWorker.schedule(applicationContext)
+                    }
+
                     val missing = (
                         RECORDING_TASK_CACHE_TARGET - store.cachedRecordingTaskCount()
                     ).coerceAtLeast(0)
