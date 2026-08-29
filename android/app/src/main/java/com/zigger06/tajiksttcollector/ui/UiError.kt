@@ -13,6 +13,8 @@ fun userFacingError(error: Throwable, fallback: String): String = when {
     error is ApiException && error.statusCode == 429 ->
         "Дархостҳо муваққатан маҳдуд шуданд. Каме интизор шавед ва дубора кӯшиш кунед."
     error is UnknownHostException || error is ConnectException || error is SocketTimeoutException ->
-        "Сервер ҳоло дастрас нест. Интернетро санҷед ё баъдтар дубора кӯшиш кунед."
+        "Сервер Дастнорас аст"
+    error is IllegalStateException && fallback.startsWith("Пайвастшав") ->
+        "Сервер Дастнорас аст"
     else -> fallback
 }
