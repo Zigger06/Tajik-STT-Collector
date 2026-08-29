@@ -25,11 +25,12 @@ object ServerConfig {
 
     suspend fun resolve(cachedUrl: String): String = withContext(Dispatchers.IO) {
         val cached = cachedUrl.trim().trimEnd('/')
-        if (isValid(cached)) return@withContext cached
 
-        // Fresh installs try the remotely updateable URL, but only as a sub-second
-        // best-effort lookup. If it is unavailable, use the embedded Funnel address
-        // immediately instead of treating config-host failure as server failure.
+        // Deployment configuration must win over an old value kept in
+        // SharedPreferences. Earlier builds returned any syntactically valid cached
+        // https:// URL immediately, so a phone that had once used an older Funnel
+        // address never even attempted the current server and misleadingly showed
+        // "Сервер Дастнорас аст" while Chrome could reach the live Funnel normally.
         val remoteUrl = runCatching {
             val request = Request.Builder()
                 .url("$CONFIG_URL?time=${System.currentTimeMillis()}")
@@ -44,7 +45,12 @@ object ServerConfig {
             }
         }.getOrNull().orEmpty()
 
-        if (isValid(remoteUrl)) remoteUrl else BUILT_IN_SERVER_URL
+        when {
+            isValid(remoteUrl) -> remoteUrl
+            isValid(BUILT_IN_SERVER_URL) -> BUILT_IN_SERVER_URL
+            isValid(cached) -> cached
+            else -> BUILT_IN_SERVER_URL
+        }
     }
 
     private fun isValid(url: String): Boolean = url.startsWith("https://")
