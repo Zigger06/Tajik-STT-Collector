@@ -203,12 +203,19 @@ fun MyDataScreen(
     ) { uri ->
         val recordingId = pendingDownloadId
         pendingDownloadId = null
-        if (uri != null && recordingId != null) {
+        if (recordingId == null) {
+            downloadBusyId = null
+        } else if (uri == null) {
+            downloadBusyId = null
+        } else {
             scope.launch {
-                downloadBusyId = recordingId
                 error = ""
                 try {
-                    val bytes = ApiClient(settings).ownRecordingAudio(recordingId)
+                    // The network fetch happens before the system save dialog opens.
+                    // This callback is intentionally cache-only, so saving a file can
+                    // never start a second HTTP request or strand the UI on a socket.
+                    val bytes = ApiClient(settings).cachedOwnRecordingAudio(recordingId)
+                        ?: throw IOException("audio cache unavailable")
                     val output = context.contentResolver.openOutputStream(uri)
                         ?: throw IOException("output unavailable")
                     output.use {
@@ -367,8 +374,27 @@ fun MyDataScreen(
                                 downloadBusyId == recording.id,
                             onPlay = { playRecording(recording) },
                             onDownload = {
-                                pendingDownloadId = recording.id
-                                saveRecordingLauncher.launch("${recording.id}.wav")
+                                if (downloadBusyId == null) {
+                                    val recordingId = recording.id
+                                    scope.launch {
+                                        downloadBusyId = recordingId
+                                        error = ""
+                                        try {
+                                            // Fetch once into the bounded process RAM cache
+                                            // before Android's external save UI is opened.
+                                            ApiClient(settings).ownRecordingAudio(recordingId)
+                                            pendingDownloadId = recordingId
+                                            saveRecordingLauncher.launch("$recordingId.wav")
+                                        } catch (exception: Exception) {
+                                            error = userFacingError(
+                                                exception,
+                                                "Сабт боргирӣ нашуд.",
+                                            )
+                                            pendingDownloadId = null
+                                            downloadBusyId = null
+                                        }
+                                    }
+                                }
                             },
                             onDelete = { recordingToDelete = recording },
                         )
