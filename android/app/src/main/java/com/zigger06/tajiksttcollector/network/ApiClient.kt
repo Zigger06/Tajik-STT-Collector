@@ -31,11 +31,8 @@ import java.util.concurrent.TimeUnit
 class ApiException(val statusCode: Int, message: String) : IOException(message)
 
 /**
- * Android's system resolver can return IPv6 routes first even on mobile networks
- * where IPv6 connectivity to the public Funnel is incomplete. OkHttp 4.x may then
- * wait on those routes one-by-one before trying IPv4, while Chrome succeeds quickly
- * with its own Happy-Eyeballs/DNS stack. Keep system DNS (no third-party resolver),
- * but prefer IPv4 addresses and retain IPv6 as a fallback.
+ * Retained only as a historical compatibility helper. ApiClient now uses
+ * ResilientDns, which can recover from an operator/system DNS failure through DoH.
  */
 private object Ipv4FirstDns : Dns {
     override fun lookup(hostname: String) =
@@ -47,21 +44,13 @@ private object Ipv4FirstDns : Dns {
 class ApiClient(private val settings: AppSettings) {
     private val baseUrl = settings.serverUrl.trim().trimEnd('/')
     private val client = OkHttpClient.Builder()
-        .dns(Ipv4FirstDns)
+        .dns(ResilientDns)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        // Bound DNS + connect + TLS + request/response as one operation. Without a
-        // call timeout, several unreachable routes could make a single button press
-        // appear frozen for minutes while the backend sees no request at all.
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Setup immediately performs the authenticated registration request next.
-     * A separate /health round-trip only doubles the chance of transport trouble and
-     * does not prove anything that a successful registration does not already prove.
-     */
     suspend fun checkHealth(): Boolean = true
 
     suspend fun registerVolunteer() = withContext(Dispatchers.IO) {
@@ -82,7 +71,6 @@ class ApiClient(private val settings: AppSettings) {
         Unit
     }
 
-    /** Explicit re-consent always uses a fresh proof challenge. */
     suspend fun resumeConsent() = withContext(Dispatchers.IO) {
         val challenge = registrationChallenge()
         val nonce = challenge.getString("nonce")
@@ -116,10 +104,6 @@ class ApiClient(private val settings: AppSettings) {
             execute(jsonRequest("/api/v1/texts/batch", body)).optInt("inserted", 0)
         }
 
-    /**
-     * Recording UI asks this for every prompt. The hot path is deliberately local:
-     * a prefetched task is returned without touching DNS, Funnel or the PC server.
-     */
     suspend fun recordingTask(excludeTextIds: List<Long> = emptyList()): TextTask? =
         withContext(Dispatchers.IO) {
             cachedRecordingTask(excludeTextIds)?.let { return@withContext it }
@@ -189,7 +173,6 @@ class ApiClient(private val settings: AppSettings) {
         )
     }
 
-    /** Download reviewer audio once; repeated playback comes from process RAM. */
     suspend fun reviewAudio(recordingId: String, audioUrl: String): ByteArray =
         withContext(Dispatchers.IO) {
             val key = "review:${settings.volunteerId}:$recordingId"
@@ -270,7 +253,6 @@ class ApiClient(private val settings: AppSettings) {
             )
         }
 
-    /** Fetch once, keep a bounded in-memory copy, and reuse it for Play + Download. */
     suspend fun ownRecordingAudio(recordingId: String): ByteArray = withContext(Dispatchers.IO) {
         val key = "own:${settings.volunteerId}:$recordingId"
         cachedAudio(key)?.let { return@withContext it }
@@ -280,7 +262,6 @@ class ApiClient(private val settings: AppSettings) {
         bytes
     }
 
-    /** Returns only an already-fetched own WAV; this method never touches the network. */
     fun cachedOwnRecordingAudio(recordingId: String): ByteArray? =
         cachedAudio("own:${settings.volunteerId}:$recordingId")
 
@@ -394,10 +375,6 @@ class ApiClient(private val settings: AppSettings) {
             val declared = body.contentLength()
             if (declared > maxBytes) throw IOException("Audio is too large for memory cache")
 
-            // Our audio endpoints always provide Content-Length. Read exactly that
-            // many bytes and return immediately instead of waiting for a socket EOF.
-            // This also makes the download path robust if an HTTP connection is kept
-            // alive after the complete WAV body has already arrived.
             if (declared >= 0L) {
                 val expected = declared.toInt()
                 val output = ByteArrayOutputStream(expected)
@@ -414,7 +391,6 @@ class ApiClient(private val settings: AppSettings) {
                 return output.toByteArray()
             }
 
-            // Defensive fallback for an unexpected chunked/unknown-length response.
             val output = ByteArrayOutputStream(64 * 1024)
             body.byteStream().use { input ->
                 val buffer = ByteArray(64 * 1024)
@@ -541,7 +517,6 @@ class ApiClient(private val settings: AppSettings) {
             }
         }
 
-        /** Seeds process memory from LocalStore, or adds freshly prefetched tasks. */
         fun seedRecordingTasks(volunteerId: String, tasks: List<TextTask>) {
             if (volunteerId.isBlank() || tasks.isEmpty()) return
             synchronized(recordingTaskCacheLock) {
@@ -554,7 +529,6 @@ class ApiClient(private val settings: AppSettings) {
             }
         }
 
-        /** Remove a prompt immediately after its WAV is accepted into the local queue. */
         fun discardRecordingTask(volunteerId: String, textId: Long) {
             synchronized(recordingTaskCacheLock) {
                 val cache = recordingTaskCache[volunteerId] ?: return

@@ -13,11 +13,13 @@ class AndroidTransportResilienceTest(unittest.TestCase):
             ROOT
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/network/ApiClient.kt"
         ).read_text(encoding="utf-8")
+        dns = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/network/ResilientDns.kt"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("private object Ipv4FirstDns : Dns", api)
-        self.assertIn("Dns.SYSTEM.lookup(hostname).sortedBy", api)
-        self.assertIn("address is Inet4Address", api)
-        self.assertIn(".dns(Ipv4FirstDns)", api)
+        self.assertIn(".dns(ResilientDns)", api)
+        self.assertIn("address is Inet4Address", dns)
         self.assertIn(".connectTimeout(5, TimeUnit.SECONDS)", api)
         self.assertIn(".callTimeout(20, TimeUnit.SECONDS)", api)
 
