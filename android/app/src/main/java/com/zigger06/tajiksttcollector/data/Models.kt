@@ -63,6 +63,9 @@ data class OwnRecording(
 data class MyDataSnapshot(
     val recordings: List<OwnRecording>,
     val consentActive: Boolean,
+    val total: Int = recordings.size,
+    val hasMore: Boolean = false,
+    val nextOffset: Int = recordings.size,
 )
 
 data class PendingRecording(
