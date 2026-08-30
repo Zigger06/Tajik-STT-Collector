@@ -155,7 +155,7 @@ class MainActivity : ComponentActivity() {
             BackHandler(enabled = showSnakeGame) {
                 showSnakeGame = false
             }
-            BackHandler(enabled = showMyData && !showSnakeGame) {
+            BackHandler(enabled = showMyData) {
                 showMyData = false
             }
 
