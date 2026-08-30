@@ -5,9 +5,17 @@ from pathlib import Path
 from .service import (
     CollectorError,
     CollectorService,
+    ConflictError,
     normalize_text,
     validate_uuid,
 )
+
+
+VOLUNTEER_TEXT_HOURLY_LIMIT = 60
+
+
+class VolunteerTextRateLimitError(CollectorError):
+    status_code = 429
 
 
 class StorageAwareCollectorService(CollectorService):
@@ -53,12 +61,69 @@ class StorageAwareCollectorService(CollectorService):
             }
         return None
 
+    @staticmethod
+    def _assert_text_budget(connection, volunteer_id: str, new_items: int) -> None:
+        """Bound actual new volunteer sentences, not merely HTTP request count.
+
+        The legacy HTTP limiter charges one slot per request, so a batch endpoint could
+        otherwise amplify one request into dozens of stored texts. This persistent
+        semantic quota survives backend restarts and counts the rows that would really
+        be inserted, closing that amplification path independently of HTTP batching.
+        """
+        if new_items <= 0:
+            return
+        recent = int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM texts
+                WHERE submitted_by = ?
+                  AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')
+                """,
+                (volunteer_id,),
+            ).fetchone()[0]
+        )
+        if recent + new_items > VOLUNTEER_TEXT_HOURLY_LIMIT:
+            raise VolunteerTextRateLimitError(
+                "too many volunteer texts; please try again later"
+            )
+
     def submit_text(self, volunteer_id: str, content: str, source: str = "") -> dict:
-        """Volunteer-facing text tasks stay short enough for recording and review."""
+        """Volunteer-facing text tasks stay short and share the persistent quota."""
+        volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
+        self._require_volunteer(volunteer_id)
         normalized = normalize_text(content)
+        if len(normalized) < 3:
+            raise CollectorError("text is too short")
         if len(normalized) > 300:
             raise CollectorError("volunteer text must be at most 300 characters")
-        return super().submit_text(volunteer_id, normalized, source)
+        source = normalize_text(source)[:500]
+
+        with self.database.connect() as connection:
+            # Serialize budget-check + insert across ThreadingHTTPServer workers.
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT id FROM texts WHERE normalized = ?",
+                (normalized.casefold(),),
+            ).fetchone()
+            if existing:
+                raise ConflictError("text already exists")
+            self._assert_text_budget(connection, volunteer_id, 1)
+            cursor = connection.execute(
+                """
+                INSERT INTO texts
+                    (content, normalized, source, submitted_by, status, required_recordings)
+                VALUES (?, ?, ?, ?, 'pending_review', 5)
+                """,
+                (normalized, normalized.casefold(), source, volunteer_id),
+            )
+            text_id = int(cursor.lastrowid)
+        return {
+            "id": text_id,
+            "content": normalized,
+            "source": source,
+            "status": "pending_review",
+        }
 
     def submit_text_batch(
         self,
@@ -68,9 +133,10 @@ class StorageAwareCollectorService(CollectorService):
     ) -> dict:
         """Insert many short volunteer sentences in one HTTP request.
 
-        The Android UI may accept a paragraph up to 5000 characters, split it into
-        sentence-sized units, and send all units here at once. Each stored review task
-        remains independent and never exceeds 300 characters.
+        A batch may still contain up to 50 UI-split sentences for convenience, but the
+        persistent hourly quota counts every actual new sentence. Therefore restarting
+        the backend or packing many sentences into one request cannot multiply the
+        allowed contribution rate.
         """
         volunteer_id = validate_uuid(volunteer_id, "volunteer_id")
         self._require_volunteer(volunteer_id)
@@ -87,25 +153,45 @@ class StorageAwareCollectorService(CollectorService):
                 raise CollectorError("each volunteer text must be at most 300 characters")
 
         source = normalize_text(source)[:500]
+        unique_by_normalized: dict[str, str] = {}
+        for content in cleaned:
+            unique_by_normalized.setdefault(content.casefold(), content)
+
         inserted_ids: list[int] = []
-        duplicates = 0
         with self.database.connect() as connection:
-            for content in cleaned:
+            # BEGIN IMMEDIATE makes the semantic quota race-safe across concurrent
+            # batch/single submissions handled by different server threads.
+            connection.execute("BEGIN IMMEDIATE")
+            normalized_values = list(unique_by_normalized)
+            placeholders = ", ".join("?" for _ in normalized_values)
+            existing = {
+                str(row["normalized"])
+                for row in connection.execute(
+                    f"SELECT normalized FROM texts WHERE normalized IN ({placeholders})",
+                    normalized_values,
+                ).fetchall()
+            }
+            new_contents = [
+                content
+                for normalized, content in unique_by_normalized.items()
+                if normalized not in existing
+            ]
+            self._assert_text_budget(connection, volunteer_id, len(new_contents))
+
+            for content in new_contents:
                 cursor = connection.execute(
                     """
-                    INSERT OR IGNORE INTO texts
+                    INSERT INTO texts
                         (content, normalized, source, submitted_by, status, required_recordings)
                     VALUES (?, ?, ?, ?, 'pending_review', 5)
                     """,
                     (content, content.casefold(), source, volunteer_id),
                 )
-                if cursor.rowcount:
-                    inserted_ids.append(int(cursor.lastrowid))
-                else:
-                    duplicates += 1
+                inserted_ids.append(int(cursor.lastrowid))
+
         return {
             "inserted": len(inserted_ids),
-            "duplicates": duplicates,
+            "duplicates": len(cleaned) - len(inserted_ids),
             "text_ids": inserted_ids,
         }
 

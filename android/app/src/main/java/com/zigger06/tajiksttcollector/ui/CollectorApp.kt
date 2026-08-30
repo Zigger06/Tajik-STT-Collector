@@ -114,6 +114,7 @@ fun CollectorApp(
     store: LocalStore,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
+    onGame: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -165,6 +166,7 @@ fun CollectorApp(
                 volunteerStats = volunteerStats,
                 darkTheme = darkTheme,
                 onDarkThemeChange = onDarkThemeChange,
+                onGame = onGame,
                 onRecord = { screen = Screen.RECORD },
                 onAddText = { screen = Screen.ADD_TEXT },
                 onTextReview = { screen = Screen.TEXT_REVIEW },
@@ -248,6 +250,7 @@ private fun HomeScreen(
     volunteerStats: VolunteerStats,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
+    onGame: () -> Unit,
     onRecord: () -> Unit,
     onAddText: () -> Unit,
     onTextReview: () -> Unit,
@@ -272,6 +275,10 @@ private fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            OutlinedButton(onClick = onGame) {
+                Text("𓆙 Игра")
+            }
+            Spacer(Modifier.width(6.dp))
             Icon(
                 if (darkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
                 contentDescription = null,

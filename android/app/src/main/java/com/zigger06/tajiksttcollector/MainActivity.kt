@@ -52,6 +52,7 @@ import com.zigger06.tajiksttcollector.network.ApiClient
 import com.zigger06.tajiksttcollector.network.ServerConfig
 import com.zigger06.tajiksttcollector.ui.CollectorApp
 import com.zigger06.tajiksttcollector.ui.MyDataScreen
+import com.zigger06.tajiksttcollector.ui.SnakeGameScreen
 import com.zigger06.tajiksttcollector.ui.theme.TajikCollectorTheme
 import com.zigger06.tajiksttcollector.ui.userFacingError
 import kotlinx.coroutines.launch
@@ -73,6 +74,7 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(initialSettings.participationRevoked)
             }
             var showMyData by remember { mutableStateOf(false) }
+            var showSnakeGame by remember { mutableStateOf(false) }
             var confirmResume by remember { mutableStateOf(false) }
             var resumeBusy by remember { mutableStateOf(false) }
             var resumeError by remember { mutableStateOf("") }
@@ -150,6 +152,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            BackHandler(enabled = showSnakeGame) {
+                showSnakeGame = false
+            }
             BackHandler(enabled = showMyData) {
                 showMyData = false
             }
@@ -168,6 +173,10 @@ class MainActivity : ComponentActivity() {
                         .background(MaterialTheme.colorScheme.background),
                 ) {
                     when {
+                        showSnakeGame -> {
+                            SnakeGameScreen(onBack = { showSnakeGame = false })
+                        }
+
                         showMyData -> {
                             MyDataScreen(
                                 store = store,
@@ -202,6 +211,7 @@ class MainActivity : ComponentActivity() {
                                         store.saveDarkTheme(enabled)
                                         darkTheme = enabled
                                     },
+                                    onGame = { showSnakeGame = true },
                                 )
                             }
                             ExtendedFloatingActionButton(
