@@ -99,7 +99,8 @@ class SnakeGameContractTest(unittest.TestCase):
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/ui/CollectorApp.kt"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('Text("𓆙 Игра")', collector)
+        self.assertIn('Text("𓆙 Бозӣ")', collector)
+        self.assertIn('"𓆙 Бозӣ"', game)
         self.assertIn("onGame: () -> Unit", collector)
         self.assertIn("onGame = { showSnakeGame = true }", activity)
         self.assertIn("SnakeGameScreen", activity)
@@ -108,6 +109,11 @@ class SnakeGameContractTest(unittest.TestCase):
         self.assertIn("best_score", game)
         self.assertIn("Icons.Default.Pause", game)
         self.assertIn("Icons.Default.Refresh", game)
+        self.assertNotIn("SnakeControls", game)
+        self.assertNotIn('Text("↑")', game)
+        self.assertNotIn('Text("↓")', game)
+        self.assertNotIn('Text("←")', game)
+        self.assertNotIn('Text("→")', game)
         self.assertNotIn("ApiClient", game)
         self.assertNotIn("UploadWorker", game)
         self.assertNotIn("http://", game)

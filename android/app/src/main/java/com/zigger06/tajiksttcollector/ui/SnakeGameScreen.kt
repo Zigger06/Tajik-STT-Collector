@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,7 +31,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -185,7 +183,7 @@ fun SnakeGameScreen(onBack: () -> Unit) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Бозгашт")
             }
             Text(
-                "𓆙 Игра",
+                "𓆙 Бозӣ",
                 modifier = Modifier.weight(1f),
                 fontSize = 27.sp,
                 fontWeight = FontWeight.Black,
@@ -303,8 +301,6 @@ fun SnakeGameScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-
-        SnakeControls(onDirection = ::requestDirection)
     }
 }
 
@@ -320,22 +316,6 @@ private fun ScoreCard(label: String, value: Int, modifier: Modifier = Modifier) 
             Text(value.toString(), fontSize = 24.sp, fontWeight = FontWeight.Black)
             Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-    }
-}
-
-@Composable
-private fun SnakeControls(onDirection: (SnakeDirection) -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        OutlinedButton(onClick = { onDirection(SnakeDirection.UP) }) { Text("↑") }
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            OutlinedButton(onClick = { onDirection(SnakeDirection.LEFT) }) { Text("←") }
-            OutlinedButton(onClick = { onDirection(SnakeDirection.RIGHT) }) { Text("→") }
-        }
-        OutlinedButton(onClick = { onDirection(SnakeDirection.DOWN) }) { Text("↓") }
     }
 }
 
