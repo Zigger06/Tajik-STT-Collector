@@ -17,14 +17,14 @@ val releaseSigningReady = listOf(
 
 android {
     namespace = "com.zigger06.tajiksttcollector"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.zigger06.tajiksttcollector"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        targetSdk = 36
+        versionCode = 6
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
