@@ -1,12 +1,12 @@
-name: Publish release APK
+name: Publish signed Android release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag, for example v0.5.0"
+        description: "Release tag, for example v0.6.0"
         required: true
-        default: "v0.5.0"
+        default: "v0.6.0"
 
 permissions:
   contents: write
@@ -34,11 +34,11 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::Public APK releases must be built from main."
+            echo "::error::Public releases must be built from main."
             exit 1
           fi
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Version must look like v0.5.0"
+            echo "::error::Version must look like v0.6.0"
             exit 1
           fi
           APP_VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
@@ -47,7 +47,7 @@ jobs:
             exit 1
           fi
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            echo "::error::Release $VERSION already exists. Bump versionName/versionCode instead of replacing a distributed APK."
+            echo "::error::Release $VERSION already exists. Bump versionName/versionCode instead of replacing a distributed build."
             exit 1
           fi
 
@@ -76,7 +76,7 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/tajik-stt-release.jks"
           chmod 600 "$RUNNER_TEMP/tajik-stt-release.jks"
 
-      - name: Test and build signed release APK
+      - name: Test and build signed release APK and AAB
         working-directory: android
         env:
           ANDROID_RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/tajik-stt-release.jks
@@ -85,34 +85,45 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest verifyReleaseSigningConfigured assembleRelease
+          ./gradlew testDebugUnitTest verifyReleaseSigningConfigured assembleRelease bundleRelease
 
-      - name: Verify APK signature
+      - name: Verify release signatures
         shell: bash
         run: |
           APK="android/app/build/outputs/apk/release/app-release.apk"
+          AAB="android/app/build/outputs/bundle/release/app-release.aab"
+
           if [[ ! -f "$APK" ]]; then
             echo "::error::Signed release APK was not produced at $APK"
             exit 1
           fi
+          if [[ ! -f "$AAB" ]]; then
+            echo "::error::Signed release AAB was not produced at $AAB"
+            exit 1
+          fi
+
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
           if [[ -z "$APKSIGNER" ]]; then
             echo "::error::apksigner was not found in the Android SDK."
             exit 1
           fi
           "$APKSIGNER" verify --verbose "$APK"
+          jarsigner -verify -verbose "$AAB" >/dev/null
 
-      - name: Prepare download file
+      - name: Prepare release files
         shell: bash
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk dist/Tajik-STT-Collector.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab dist/Tajik-STT-Collector.aab
 
-      - name: Keep APK as workflow artifact
+      - name: Keep APK and AAB as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Tajik-STT-Collector-${{ inputs.version }}
-          path: dist/Tajik-STT-Collector.apk
+          path: |
+            dist/Tajik-STT-Collector.apk
+            dist/Tajik-STT-Collector.aab
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -123,6 +134,7 @@ jobs:
         run: |
           gh release create "$VERSION" \
             "dist/Tajik-STT-Collector.apk#Tajik STT Collector — signed release APK" \
+            "dist/Tajik-STT-Collector.aab#Tajik STT Collector — signed Google Play AAB" \
             --target "$GITHUB_SHA" \
             --title "Tajik STT Collector $VERSION" \
-            --notes "Signed release build for Tajik STT Collector. Android 8.0 or newer is required."
+            --notes "Signed Android release for Tajik STT Collector. Google Play upload: Tajik-STT-Collector.aab. Android 8.0 or newer is required."
