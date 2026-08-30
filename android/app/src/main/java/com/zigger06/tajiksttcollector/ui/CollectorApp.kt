@@ -267,27 +267,38 @@ private fun HomeScreen(
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp),
+            ) {
                 Text("Садои тоҷикӣ", fontSize = 30.sp, fontWeight = FontWeight.Black)
                 Text(
                     "Барои сохтани Tajik‑STT саҳм гузоред",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            OutlinedButton(onClick = onGame) {
-                Text("𓆙 Игра")
-            }
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                if (darkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(6.dp))
-            Switch(checked = darkTheme, onCheckedChange = onDarkThemeChange)
-            IconButton(onClick = onSettings) {
-                Icon(Icons.Default.Settings, contentDescription = "Танзимот")
+            Column(horizontalAlignment = Alignment.End) {
+                OutlinedButton(onClick = onGame) {
+                    Text("𓆙 Бозӣ")
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (darkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Switch(checked = darkTheme, onCheckedChange = onDarkThemeChange)
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Танзимот")
+                    }
+                }
             }
         }
 
