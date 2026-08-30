@@ -94,9 +94,14 @@ class SnakeGameContractTest(unittest.TestCase):
             ROOT
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/MainActivity.kt"
         ).read_text(encoding="utf-8")
+        collector = (
+            ROOT
+            / "android/app/src/main/java/com/zigger06/tajiksttcollector/ui/CollectorApp.kt"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn('Text("𓆙"', activity)
-        self.assertIn('text = { Text("Игра") }', activity)
+        self.assertIn('Text("𓆙 Игра")', collector)
+        self.assertIn("onGame: () -> Unit", collector)
+        self.assertIn("onGame = { showSnakeGame = true }", activity)
         self.assertIn("SnakeGameScreen", activity)
         self.assertIn("detectDragGestures", game)
         self.assertIn("SNAKE_GRID_SIZE", game)
