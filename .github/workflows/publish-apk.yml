@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag, for example v0.6.0"
+        description: "Release tag, for example v0.6.1"
         required: true
-        default: "v0.6.0"
+        default: "v0.6.1"
 
 permissions:
   contents: write
@@ -38,7 +38,7 @@ jobs:
             exit 1
           fi
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Version must look like v0.6.0"
+            echo "::error::Version must look like v0.6.1"
             exit 1
           fi
           APP_VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
