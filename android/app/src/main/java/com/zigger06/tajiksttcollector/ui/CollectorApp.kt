@@ -276,7 +276,7 @@ private fun HomeScreen(
                     .weight(1f)
                     .padding(end = 12.dp),
             ) {
-                Text("Садои тоҷикӣ", fontSize = 30.sp, fontWeight = FontWeight.Black)
+                Text("Овози Тоҷик", fontSize = 30.sp, fontWeight = FontWeight.Black)
                 Text(
                     "Барои сохтани Tajik‑STT саҳм гузоред",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
