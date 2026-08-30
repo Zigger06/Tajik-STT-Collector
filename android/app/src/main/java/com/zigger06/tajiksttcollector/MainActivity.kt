@@ -211,19 +211,9 @@ class MainActivity : ComponentActivity() {
                                         store.saveDarkTheme(enabled)
                                         darkTheme = enabled
                                     },
+                                    onGame = { showSnakeGame = true },
                                 )
                             }
-                            ExtendedFloatingActionButton(
-                                onClick = { showSnakeGame = true },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .statusBarsPadding()
-                                    .padding(end = 16.dp, top = 82.dp),
-                                icon = {
-                                    Text("𓆙", style = MaterialTheme.typography.titleLarge)
-                                },
-                                text = { Text("Игра") },
-                            )
                             ExtendedFloatingActionButton(
                                 onClick = { showMyData = true },
                                 modifier = Modifier
