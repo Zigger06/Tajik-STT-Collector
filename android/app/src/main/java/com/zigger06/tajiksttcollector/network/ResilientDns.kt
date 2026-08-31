@@ -10,17 +10,57 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 /**
- * Android apps normally use the device/operator DNS through Dns.SYSTEM. In the
- * real-phone acceptance test Chrome could open the public *.ts.net Funnel while
- * OkHttp repeatedly failed before the request ever reached the Python server.
- * Chrome can use Secure DNS independently of Android's system resolver, so a bad
- * operator/private-DNS path can affect the app but not Chrome.
+ * Prefer Android's system/operator DNS because it is the path the rest of the
+ * device uses and it can already resolve the public Funnel host on most phones.
+ * DNS-over-HTTPS is kept only as a recovery path for operators/private-DNS
+ * configurations where the system resolver genuinely fails.
  *
- * For the Tailscale Funnel hostname we therefore resolve through DNS-over-HTTPS
- * first. The DoH endpoint itself is bootstrapped with literal Google Public DNS
- * IPs, so this path does not depend on the broken system DNS. Other hosts keep the
- * normal system resolver first and use DoH only as a recovery path.
+ * The fallback must also run when a resolver returns an empty list without
+ * throwing. Some DoH/network combinations behave exactly that way.
  */
+internal class FallbackDns(
+    private val primary: Dns,
+    private val fallback: Dns,
+) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        var primaryError: Throwable? = null
+        val primaryAddresses = try {
+            primary.lookup(hostname)
+        } catch (error: Throwable) {
+            primaryError = error
+            emptyList()
+        }
+        if (primaryAddresses.isNotEmpty()) return normalize(primaryAddresses)
+
+        var fallbackError: Throwable? = null
+        val fallbackAddresses = try {
+            fallback.lookup(hostname)
+        } catch (error: Throwable) {
+            fallbackError = error
+            emptyList()
+        }
+        if (fallbackAddresses.isNotEmpty()) return normalize(fallbackAddresses)
+
+        val failure = UnknownHostException("Could not resolve host: $hostname")
+        when {
+            fallbackError != null -> failure.initCause(fallbackError)
+            primaryError != null -> failure.initCause(primaryError)
+        }
+        if (primaryError != null && primaryError !== failure.cause) {
+            failure.addSuppressed(primaryError)
+        }
+        if (fallbackError != null && fallbackError !== failure.cause) {
+            failure.addSuppressed(fallbackError)
+        }
+        throw failure
+    }
+
+    private fun normalize(addresses: List<InetAddress>): List<InetAddress> =
+        addresses.distinct().sortedBy { address ->
+            if (address is Inet4Address) 0 else 1
+        }
+}
+
 object ResilientDns : Dns {
     private val bootstrapClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
@@ -38,25 +78,10 @@ object ResilientDns : Dns {
         .includeIPv6(true)
         .build()
 
-    override fun lookup(hostname: String): List<InetAddress> {
-        val preferSecure = hostname.endsWith(".ts.net", ignoreCase = true)
-        val first = if (preferSecure) secureDns else Dns.SYSTEM
-        val second = if (preferSecure) Dns.SYSTEM else secureDns
+    private val delegate = FallbackDns(
+        primary = Dns.SYSTEM,
+        fallback = secureDns,
+    )
 
-        val addresses = runCatching { first.lookup(hostname) }
-            .getOrElse { firstError ->
-                runCatching { second.lookup(hostname) }
-                    .getOrElse { secondError ->
-                        val failure = UnknownHostException("Could not resolve host")
-                        failure.initCause(secondError)
-                        failure.addSuppressed(firstError)
-                        throw failure
-                    }
-            }
-
-        if (addresses.isEmpty()) throw UnknownHostException("Could not resolve host")
-        return addresses.distinct().sortedBy { address ->
-            if (address is Inet4Address) 0 else 1
-        }
-    }
+    override fun lookup(hostname: String): List<InetAddress> = delegate.lookup(hostname)
 }

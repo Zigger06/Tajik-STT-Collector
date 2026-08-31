@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AndroidSecureDnsFallbackTest(unittest.TestCase):
-    def test_funnel_uses_bootstrapped_doh_with_system_fallback(self) -> None:
+    def test_system_dns_is_primary_and_bootstrapped_doh_is_fallback(self) -> None:
         dns = (
             ROOT
             / "android/app/src/main/java/com/zigger06/tajiksttcollector/network/ResilientDns.kt"
@@ -24,8 +24,12 @@ class AndroidSecureDnsFallbackTest(unittest.TestCase):
         self.assertIn('https://dns.google/dns-query', dns)
         self.assertIn('InetAddress.getByName("8.8.8.8")', dns)
         self.assertIn('InetAddress.getByName("8.8.4.4")', dns)
-        self.assertIn('hostname.endsWith(".ts.net"', dns)
-        self.assertIn('val second = if (preferSecure) Dns.SYSTEM else secureDns', dns)
+        self.assertIn('internal class FallbackDns(', dns)
+        self.assertIn('primary = Dns.SYSTEM', dns)
+        self.assertIn('fallback = secureDns', dns)
+        self.assertIn('if (primaryAddresses.isNotEmpty())', dns)
+        self.assertIn('if (fallbackAddresses.isNotEmpty())', dns)
+        self.assertNotIn('hostname.endsWith(".ts.net"', dns)
         self.assertIn('.dns(ResilientDns)', api)
         self.assertNotIn('.dns(Ipv4FirstDns)\n', api)
 
